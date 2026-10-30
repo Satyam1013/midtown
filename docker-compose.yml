@@ -1,0 +1,22 @@
+services:
+  mongodb:
+    image: mongo:7.0
+    container_name: midtown-mongodb
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "${MONGO_HOST_PORT:-27017}:27017"
+    environment:
+      MONGO_INITDB_DATABASE: midtown_hotel
+    volumes:
+      - midtown-mongo-data:/data/db
+      - ./docker/mongo/init-replica.js:/scripts/init-replica.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "/scripts/init-replica.js"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  midtown-mongo-data:
