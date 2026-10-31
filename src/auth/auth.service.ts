@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import * as bcrypt from 'bcryptjs';
@@ -31,7 +31,11 @@ export class AuthService {
     private readonly tokens: TokenService,
     private readonly sms: SmsService,
     private readonly config: ConfigService,
-  ) {}
+  ) {
+    if (this.otpBypassed) {
+      new Logger('OTP').warn('OTP_PROVIDER=bypass: guest login needs only a room number and phone');
+    }
+  }
 
   async staffLogin(dto: StaffLoginDto) {
     const id = dto.identifier.trim();
@@ -69,6 +73,9 @@ export class AuthService {
 
   async requestOtp(dto: RequestOtpDto) {
     const stay = await this.matchStay(dto);
+    if (this.otpBypassed) {
+      return { sent: true, expiresInMinutes: this.config.get<number>('OTP_EXPIRY_MINUTES', 5) };
+    }
     const recent = await this.otps.exists({
       stayId: stay._id,
       createdAt: { $gt: new Date(Date.now() - OTP_RESEND_SECONDS * 1000) },
@@ -89,6 +96,7 @@ export class AuthService {
 
   async verifyOtp(dto: VerifyOtpDto) {
     const stay = await this.matchStay(dto);
+    if (this.otpBypassed) return { accessToken: await this.tokens.signGuest(String(stay._id)), stay };
     const invalid = unauthorized('INVALID_OTP', 'Wrong or expired OTP');
     const challenge = await this.otps
       .findOne({ stayId: stay._id, consumedAt: null, expiresAt: { $gt: new Date() } })
@@ -114,6 +122,10 @@ export class AuthService {
 
   async publicToken() {
     return { accessToken: await this.tokens.signPublic() };
+  }
+
+  private get otpBypassed() {
+    return this.config.get<string>('OTP_PROVIDER') === 'bypass';
   }
 
   private async matchStay(dto: RequestOtpDto) {

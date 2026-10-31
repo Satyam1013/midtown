@@ -61,7 +61,7 @@ export class EnvironmentVariables {
   @IsInt() @Min(1) @Max(30)
   OTP_EXPIRY_MINUTES: number = 5;
 
-  @IsIn(['console', 'msg91'])
+  @IsIn(['console', 'msg91', 'bypass'])
   OTP_PROVIDER = 'console';
 
   @IsOptional() @IsString()

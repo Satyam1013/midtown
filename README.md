@@ -100,7 +100,7 @@ See [.env.example](.env.example). Everything is validated at startup.
 | `JWT_ACCESS_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN` | `12h`, `30d` |
 | `OWNER_NAME`, `OWNER_PHONE`, `OWNER_EMAIL`, `OWNER_PASSWORD` | Seeded owner |
 | `OTP_EXPIRY_MINUTES` | |
-| `OTP_PROVIDER` | `console` (rejected in production) or `msg91` |
+| `OTP_PROVIDER` | `console` (rejected in production), `msg91`, or `bypass` (temporary: no SMS, any 6 digits pass, room + phone must still match) |
 | `SMS_API_KEY`, `SMS_TEMPLATE_ID`, `SMS_SENDER_ID` | Needed for `msg91` |
 | `FRONTEND_MANAGER_URL`, `FRONTEND_GUEST_URL` | CORS; comma-separated, no trailing slash |
 

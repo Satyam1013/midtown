@@ -1,5 +1,6 @@
 import { io, Socket } from 'socket.io-client';
 import { AddressInfo } from 'net';
+import { ConfigService } from '@nestjs/config';
 import { SmsService } from '../src/auth/sms.service';
 import { bearer, bootApp, checkIn, Ctx } from './helpers';
 
@@ -239,6 +240,24 @@ describe('Guest security and orders', () => {
     await ctx.api().post(`${V1}/auth/guest/request-otp`).send({ roomNumber: '203', phone: '9000000099' }).expect(404);
     await guestLogin('203', '9700000001');
     await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ roomNumber: '203', phone: '9700000001', otp: lastOtp }).expect(401);
+  });
+
+  it('bypass mode skips the SMS but still needs a matching room and phone', async () => {
+    const config = ctx.app.get(ConfigService);
+    const realGet = config.get.bind(config);
+    const spy = jest.spyOn(config, 'get').mockImplementation(((key: string, fallback?: unknown) =>
+      key === 'OTP_PROVIDER' ? 'bypass' : realGet(key, fallback)) as any);
+    const send = ctx.app.get(SmsService).sendOtp as jest.Mock;
+    send.mockClear();
+    const creds = { roomNumber: '203', phone: '9700000001' };
+    await ctx.api().post(`${V1}/auth/guest/request-otp`).send(creds).expect(200);
+    expect(send).not.toHaveBeenCalled();
+    const res = await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ ...creds, otp: '000000' }).expect(200);
+    const stay = await ctx.api().get(`${V1}/guest/stay`).set(bearer(res.body.data.accessToken)).expect(200);
+    expect(stay.body.data.stay.id).toBe(stayA.id);
+    await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ ...creds, phone: '9000000099', otp: '000000' }).expect(404);
+    await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ ...creds, otp: '12' }).expect(400);
+    spy.mockRestore();
   });
 
   it('8. a guest token only ever sees its own folio', async () => {
