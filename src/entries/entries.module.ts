@@ -1,14 +1,8 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { DayRegisterEntry, DayRegisterEntrySchema } from './schemas/day-register-entry.schema';
+import { DaybookModule } from '../daybook/daybook.module';
+import { EntriesController } from './entries.controller';
+import { EntriesService } from './entries.service';
+import { LedgerService } from './ledger.service';
 
-// Phase 1: model registration only. Controller and service come next phase.
-@Module({
-  imports: [
-    MongooseModule.forFeature([
-      { name: DayRegisterEntry.name, schema: DayRegisterEntrySchema },
-    ]),
-  ],
-  exports: [MongooseModule],
-})
+@Module({ imports: [DaybookModule], controllers: [EntriesController], providers: [EntriesService, LedgerService], exports: [EntriesService, LedgerService] })
 export class EntriesModule {}

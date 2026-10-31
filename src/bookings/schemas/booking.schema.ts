@@ -7,6 +7,7 @@ export enum BookingSource {
   BookingCom = 'Booking.com',
   Goibibo = 'Goibibo',
   Agoda = 'Agoda',
+  Airbnb = 'Airbnb', // offered by the manager app's booking form
   WalkIn = 'Walk-in',
   Phone = 'Phone',
   GuestApp = 'GuestApp',
@@ -32,7 +33,7 @@ export class Booking {
   @Prop({ required: true, trim: true })
   guestName: string;
 
-  @Prop({ required: true, trim: true })
+  @Prop({ type: String, trim: true, default: '' })
   phone: string;
 
   @Prop(ref('RoomType'))

@@ -1,16 +1,6 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { StockItem, StockItemSchema } from './schemas/stock-item.schema';
-import { StockMovement, StockMovementSchema } from './schemas/stock-movement.schema';
+import { StockController } from './stock.controller';
+import { StockService } from './stock.service';
 
-// Phase 1: model registration only. Controller and service come next phase.
-@Module({
-  imports: [
-    MongooseModule.forFeature([
-      { name: StockItem.name, schema: StockItemSchema },
-      { name: StockMovement.name, schema: StockMovementSchema },
-    ]),
-  ],
-  exports: [MongooseModule],
-})
+@Module({ controllers: [StockController], providers: [StockService], exports: [StockService] })
 export class StockModule {}

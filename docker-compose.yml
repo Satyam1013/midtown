@@ -18,5 +18,20 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # Optional: `docker compose --profile app up --build`. Starts once MongoDB is healthy.
+  api:
+    profiles: ["app"]
+    build: .
+    env_file: .env
+    environment:
+      NODE_ENV: development
+      MONGODB_URI: mongodb://mongodb:27017/midtown_hotel?replicaSet=rs0
+    ports:
+      - "${PORT:-3000}:3000"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   midtown-mongo-data:

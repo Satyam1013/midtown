@@ -1,14 +1,6 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { Invoice, InvoiceSchema } from './schemas/invoice.schema';
+import { InvoicesController } from './invoices.controller';
+import { InvoicesService } from './invoices.service';
 
-// Phase 1: model registration only. Controller and service come next phase.
-@Module({
-  imports: [
-    MongooseModule.forFeature([
-      { name: Invoice.name, schema: InvoiceSchema },
-    ]),
-  ],
-  exports: [MongooseModule],
-})
+@Module({ controllers: [InvoicesController], providers: [InvoicesService], exports: [InvoicesService] })
 export class InvoicesModule {}

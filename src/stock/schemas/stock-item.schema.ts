@@ -1,5 +1,5 @@
 import { Prop, Schema } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, Types, Schema as MongooseSchema } from 'mongoose';
 import { buildSchema, LIVE, money } from '../../database/build-schema';
 
 @Schema({ collection: 'stock_items', timestamps: true })
@@ -16,10 +16,10 @@ export class StockItem {
 
   // Quantities are decimal (kg, litres) and must not drift, so they use
   // Decimal128 like money. Changed only through StockMovement.
-  @Prop({ type: Types.Decimal128, required: true })
+  @Prop({ type: MongooseSchema.Types.Decimal128, required: true })
   qty: Types.Decimal128;
 
-  @Prop({ type: Types.Decimal128, required: true })
+  @Prop({ type: MongooseSchema.Types.Decimal128, required: true })
   minQty: Types.Decimal128;
 
   /** Purchase rate per unit. */

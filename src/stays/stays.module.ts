@@ -1,14 +1,9 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { Stay, StaySchema } from './schemas/stay.schema';
+import { FolioModule } from '../folio/folio.module';
+import { DaybookModule } from '../daybook/daybook.module';
+import { EntriesModule } from '../entries/entries.module';
+import { StaysController } from './stays.controller';
+import { StaysService } from './stays.service';
 
-// Phase 1: model registration only. Controller and service come next phase.
-@Module({
-  imports: [
-    MongooseModule.forFeature([
-      { name: Stay.name, schema: StaySchema },
-    ]),
-  ],
-  exports: [MongooseModule],
-})
+@Module({ imports: [FolioModule, DaybookModule, EntriesModule], controllers: [StaysController], providers: [StaysService], exports: [StaysService] })
 export class StaysModule {}

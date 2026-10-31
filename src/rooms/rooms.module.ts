@@ -1,14 +1,7 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { Room, RoomSchema } from './schemas/room.schema';
+import { FolioModule } from '../folio/folio.module';
+import { RoomsController } from './rooms.controller';
+import { RoomsService } from './rooms.service';
 
-// Phase 1: model registration only. Controller and service come next phase.
-@Module({
-  imports: [
-    MongooseModule.forFeature([
-      { name: Room.name, schema: RoomSchema },
-    ]),
-  ],
-  exports: [MongooseModule],
-})
+@Module({ imports: [FolioModule], controllers: [RoomsController], providers: [RoomsService], exports: [RoomsService] })
 export class RoomsModule {}

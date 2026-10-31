@@ -31,6 +31,11 @@ export function toD128Exact(value: MoneyInput): Types.Decimal128 {
   return Types.Decimal128.fromString(dec(value).toString());
 }
 
+/** Percentage of an amount, rounded to paise. */
+export function pct(amount: MoneyInput, percent: MoneyInput): Decimal {
+  return dec(amount).times(dec(percent)).dividedBy(100).toDecimalPlaces(MONEY_SCALE);
+}
+
 export function sum(values: MoneyInput[]): Decimal {
   return values.reduce<Decimal>((acc, v) => acc.plus(dec(v)), new Decimal(0));
 }

@@ -1,14 +1,6 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { OnlineOrder, OnlineOrderSchema } from './schemas/online-order.schema';
+import { OnlineOrdersController } from './online-orders.controller';
+import { OnlineOrdersService } from './online-orders.service';
 
-// Phase 1: model registration only. Controller and service come next phase.
-@Module({
-  imports: [
-    MongooseModule.forFeature([
-      { name: OnlineOrder.name, schema: OnlineOrderSchema },
-    ]),
-  ],
-  exports: [MongooseModule],
-})
+@Module({ controllers: [OnlineOrdersController], providers: [OnlineOrdersService], exports: [OnlineOrdersService] })
 export class OnlineOrdersModule {}

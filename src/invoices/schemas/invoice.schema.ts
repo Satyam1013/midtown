@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, Types, Schema as MongooseSchema } from 'mongoose';
 import { businessDate, buildSchema, money, ref } from '../../database/build-schema';
 
 @Schema({ _id: false })
@@ -11,14 +11,14 @@ export class InvoiceLine {
   @Prop({ type: String, default: null })
   sac: string | null;
 
-  @Prop({ type: Types.Decimal128, required: true })
+  @Prop({ type: MongooseSchema.Types.Decimal128, required: true })
   qty: Types.Decimal128;
 
   @Prop(money())
   rate: Types.Decimal128;
 
   /** Total GST rate for the line (12 rooms, 5 food); split equally CGST/SGST. */
-  @Prop({ type: Types.Decimal128, required: true })
+  @Prop({ type: MongooseSchema.Types.Decimal128, required: true })
   gstPct: Types.Decimal128;
 
   @Prop(money())

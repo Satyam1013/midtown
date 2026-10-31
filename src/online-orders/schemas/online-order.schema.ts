@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, Types, Schema as MongooseSchema } from 'mongoose';
 import { businessDate, buildSchema, LIVE, money } from '../../database/build-schema';
 
 @Schema({ _id: false })
@@ -20,7 +20,7 @@ export class OnlineOrder {
   @Prop(businessDate())
   businessDate: string;
 
-  /** Swiggy / Zomato / … */
+  /** Zomato / Swiggy / Magicpin / Direct call */
   @Prop({ required: true, trim: true })
   platform: string;
 
@@ -34,14 +34,15 @@ export class OnlineOrder {
   @Prop(money())
   amount: Types.Decimal128;
 
-  @Prop({ type: Types.Decimal128, required: true })
+  @Prop({ type: MongooseSchema.Types.Decimal128, required: true })
   commissionPct: Types.Decimal128;
 
   /** amount − commission, computed server-side. */
   @Prop(money())
   payout: Types.Decimal128;
 
-  @Prop({ required: true, trim: true })
+  // The manager app sends no status on create and shows this title-cased.
+  @Prop({ type: String, trim: true, default: 'PREPARING' })
   status: string;
 }
 

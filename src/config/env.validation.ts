@@ -61,14 +61,17 @@ export class EnvironmentVariables {
   @IsInt() @Min(1) @Max(30)
   OTP_EXPIRY_MINUTES: number = 5;
 
-  @IsIn(['console', 'msg91', 'twilio'])
-  SMS_PROVIDER = 'console';
+  @IsIn(['console', 'msg91'])
+  OTP_PROVIDER = 'console';
 
   @IsOptional() @IsString()
   SMS_API_KEY?: string;
 
   @IsOptional() @IsString()
   SMS_SENDER_ID?: string;
+
+  @IsOptional() @IsString()
+  SMS_TEMPLATE_ID?: string;
 
   @IsOptional() @IsString()
   FRONTEND_MANAGER_URL?: string;
@@ -84,8 +87,8 @@ export function validateEnv(config: Record<string, unknown>): EnvironmentVariabl
     const lines = errors.map((e) => `  ${e.property}: ${Object.values(e.constraints ?? {}).join(', ')}`);
     throw new Error(`Invalid environment configuration:\n${lines.join('\n')}`);
   }
-  if (env.NODE_ENV === NodeEnv.Production && env.SMS_PROVIDER === 'console') {
-    throw new Error('SMS_PROVIDER=console is not allowed in production');
+  if (env.NODE_ENV === NodeEnv.Production && env.OTP_PROVIDER === 'console') {
+    throw new Error('OTP_PROVIDER=console is not allowed in production');
   }
   return env;
 }

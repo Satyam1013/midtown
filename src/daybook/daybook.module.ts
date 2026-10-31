@@ -1,14 +1,6 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { DayBook, DayBookSchema } from './schemas/day-book.schema';
+import { DaybookController } from './daybook.controller';
+import { DaybookService } from './daybook.service';
 
-// Phase 1: model registration only. Controller and service come next phase.
-@Module({
-  imports: [
-    MongooseModule.forFeature([
-      { name: DayBook.name, schema: DayBookSchema },
-    ]),
-  ],
-  exports: [MongooseModule],
-})
+@Module({ controllers: [DaybookController], providers: [DaybookService], exports: [DaybookService] })
 export class DaybookModule {}

@@ -1,6 +1,6 @@
 import { Prop, Schema } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
-import { buildSchema, LIVE, money, ref } from '../../database/build-schema';
+import { businessDate, buildSchema, LIVE, money, ref } from '../../database/build-schema';
 
 export enum StayStatus {
   IN_HOUSE = 'IN_HOUSE',
@@ -16,18 +16,20 @@ export class Stay {
   guestName: string;
 
   /** Guest OTP login matches against this, so it is stored normalized (digits only). */
-  @Prop({ required: true, trim: true })
+  @Prop({ type: String, trim: true, default: '' })
   phone: string;
 
   @Prop({ type: String, trim: true, default: null })
   vehicle: string | null;
 
-  @Prop({ type: Date, required: true })
-  checkIn: Date;
+  // 'YYYY-MM-DD'. The front-ends slice these to 10 characters; a UTC timestamp
+  // would show the previous day for anything before 05:30 IST.
+  @Prop(businessDate())
+  checkIn: string;
 
-  /** Planned end of stay. */
-  @Prop({ type: Date, required: true })
-  checkOut: Date;
+  /** Planned end of stay, 'YYYY-MM-DD'. */
+  @Prop(businessDate())
+  checkOut: string;
 
   @Prop({ required: true, min: 1 })
   nights: number;

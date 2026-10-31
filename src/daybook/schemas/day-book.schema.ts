@@ -14,6 +14,13 @@ export class DayBook {
   @Prop(money({ required: false, default: null }))
   closingBalance: Types.Decimal128 | null;
 
+  /**
+   * Bumped by every transaction that posts to this date and by closing it,
+   * so a post and a close running together conflict instead of interleaving.
+   */
+  @Prop({ default: 0 })
+  rev: number;
+
   @Prop({ type: Date, default: null })
   closedAt: Date | null;
 

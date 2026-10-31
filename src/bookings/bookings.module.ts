@@ -1,14 +1,6 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { Booking, BookingSchema } from './schemas/booking.schema';
+import { BookingsController } from './bookings.controller';
+import { BookingsService } from './bookings.service';
 
-// Phase 1: model registration only. Controller and service come next phase.
-@Module({
-  imports: [
-    MongooseModule.forFeature([
-      { name: Booking.name, schema: BookingSchema },
-    ]),
-  ],
-  exports: [MongooseModule],
-})
+@Module({ controllers: [BookingsController], providers: [BookingsService], exports: [BookingsService] })
 export class BookingsModule {}

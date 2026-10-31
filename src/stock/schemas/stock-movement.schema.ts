@@ -1,5 +1,5 @@
 import { Prop, Schema } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, Types, Schema as MongooseSchema } from 'mongoose';
 import { buildSchema, ref } from '../../database/build-schema';
 
 @Schema({ collection: 'stock_movements', timestamps: true })
@@ -8,7 +8,7 @@ export class StockMovement {
   stockItemId: Types.ObjectId;
 
   /** Positive = received, negative = issued / wasted. */
-  @Prop({ type: Types.Decimal128, required: true })
+  @Prop({ type: MongooseSchema.Types.Decimal128, required: true })
   delta: Types.Decimal128;
 
   @Prop({ required: true, trim: true })

@@ -28,7 +28,7 @@ export class DayRegisterEntry {
   @Prop({ type: String, trim: true, default: null })
   vehicle: string | null;
 
-  /** Register column, e.g. Room Rent / Advance / Food / Refund. */
+  /** Check-in / Check-out / Advance / Part payment / Refund / Other receipt / Restaurant / Expense */
   @Prop({ required: true, trim: true })
   type: string;
 

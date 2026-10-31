@@ -1,5 +1,5 @@
 import { SchemaFactory } from '@nestjs/mongoose';
-import { Schema, Types } from 'mongoose';
+import { Schema } from 'mongoose';
 import { baseSchemaPlugin } from './plugins/base-schema.plugin';
 
 /** SchemaFactory.createForClass + the plugins every collection must have. */
@@ -9,16 +9,19 @@ export function buildSchema<T>(cls: new (...args: any[]) => T): Schema<T> {
   return schema;
 }
 
+// Note: schema types must be Schema.Types.*. The bson classes under `Types`
+// silently produce Mixed paths, with no casting or validation.
+
 /** @Prop options for a required money field. */
 export const money = (opts: { required?: boolean; default?: unknown } = {}) => ({
-  type: Types.Decimal128,
+  type: Schema.Types.Decimal128,
   required: opts.required ?? true,
   ...(opts.default !== undefined ? { default: opts.default } : {}),
 });
 
 /** @Prop options for an ObjectId reference. */
 export const ref = (model: string, opts: { required?: boolean } = {}) => ({
-  type: Types.ObjectId,
+  type: Schema.Types.ObjectId,
   ref: model,
   required: opts.required ?? true,
   ...(opts.required === false ? { default: null } : {}),

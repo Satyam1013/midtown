@@ -1,14 +1,8 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
-import { Kot, KotSchema } from './schemas/kot.schema';
+import { DaybookModule } from '../daybook/daybook.module';
+import { EntriesModule } from '../entries/entries.module';
+import { KotsController } from './kots.controller';
+import { KotsService } from './kots.service';
 
-// Phase 1: model registration only. Controller and service come next phase.
-@Module({
-  imports: [
-    MongooseModule.forFeature([
-      { name: Kot.name, schema: KotSchema },
-    ]),
-  ],
-  exports: [MongooseModule],
-})
+@Module({ imports: [DaybookModule, EntriesModule], controllers: [KotsController], providers: [KotsService], exports: [KotsService] })
 export class KotsModule {}
