@@ -382,6 +382,83 @@ describe('Guest security and orders', () => {
   });
 });
 
+describe('Public browsing and booking', () => {
+  const daysFromNow = (n: number) => {
+    const d = new Date(`${ctx.today}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const typeId = async (name: string) => String(((await ctx.model('RoomType').findOne({ name }).lean()) as any)._id);
+  const form = async (phone: string, over: Record<string, unknown> = {}) => ({
+    guestName: 'Web Visitor', phone, otp: '000000', roomTypeId: await typeId('Deluxe'),
+    rooms: 1, pax: 2, arrivalDate: daysFromNow(3), departureDate: daysFromNow(5), note: '', ...over,
+  });
+  const sendOtp = async (phone: string) => {
+    await ctx.api().post(`${V1}/public/bookings/request-otp`).send({ phone }).expect(200);
+    return lastOtp;
+  };
+
+  it('room types need no token', async () => {
+    const res = await ctx.api().get(`${V1}/public/room-types`).expect(200);
+    expect(res.body.data).toHaveLength(4);
+    expect(res.body.data[0]).toMatchObject({ name: 'Standard', tariff: 1800, sizeSqft: 180, sleeps: 2 });
+  });
+
+  it('books with a correct OTP, at the server price, once only', async () => {
+    const otp = await sendOtp('9600000001');
+    const res = await ctx.api().post(`${V1}/public/bookings`).send(await form('9600000001', { otp })).expect(201);
+    expect(res.body.data.booking).toEqual({ id: expect.any(String), ref: expect.stringMatching(/^GA\d+/), amount: 5200, status: 'REQUESTED' });
+    expect((await ctx.model('Booking').findById(res.body.data.booking.id).lean() as any).source).toBe('GuestApp');
+    await ctx.api().post(`${V1}/public/bookings`).send(await form('9600000001', { otp })).expect(400);
+  });
+
+  it('an OTP only works for its own phone', async () => {
+    const otp = await sendOtp('9600000002');
+    const res = await ctx.api().post(`${V1}/public/bookings`).send(await form('9600000003', { otp })).expect(400);
+    expect(res.body.code).toBe('INVALID_OTP');
+  });
+
+  it('five wrong tries kill the OTP', async () => {
+    const otp = await sendOtp('9600000004');
+    const wrong = otp === '111111' ? '222222' : '111111';
+    for (let i = 0; i < 5; i++) await ctx.api().post(`${V1}/public/bookings`).send(await form('9600000004', { otp: wrong })).expect(400);
+    await ctx.api().post(`${V1}/public/bookings`).send(await form('9600000004', { otp })).expect(400);
+  });
+
+  it('an expired OTP is rejected', async () => {
+    const otp = await sendOtp('9600000005');
+    await ctx.model('OtpChallenge').updateMany({ phone: '9600000005' }, { $set: { expiresAt: new Date(Date.now() - 1000) } });
+    await ctx.api().post(`${V1}/public/bookings`).send(await form('9600000005', { otp })).expect(400);
+  });
+
+  it('a failed booking does not use up the OTP', async () => {
+    const otp = await sendOtp('9600000006');
+    await ctx.api().post(`${V1}/public/bookings`).send(await form('9600000006', { otp, rooms: 11 })).expect(400);
+    await ctx.api().post(`${V1}/public/bookings`).send(await form('9600000006', { otp })).expect(201);
+  });
+
+  it('limits OTPs per phone with 429', async () => {
+    for (let i = 0; i < 3; i++) await sendOtp('9600000007');
+    const res = await ctx.api().post(`${V1}/public/bookings/request-otp`).send({ phone: '9600000007' }).expect(429);
+    expect(res.body.code).toBe('TOO_MANY_REQUESTS');
+  });
+
+  it('validates the form on the server', async () => {
+    const phone = '9600000008';
+    const post = async (over: Record<string, unknown>) => ctx.api().post(`${V1}/public/bookings`).send(await form(phone, over));
+    const bulk = await post({ rooms: 11 });
+    expect([bulk.status, bulk.body.message]).toEqual([400, 'For bulk booking, please contact the front desk.']);
+    expect((await post({ arrivalDate: daysFromNow(-1) })).body.code).toBe('INVALID_DATES');
+    expect((await post({ departureDate: daysFromNow(3) })).body.code).toBe('INVALID_DATES');
+    expect((await post({ departureDate: daysFromNow(34) })).body.code).toBe('INVALID_DATES');
+    expect((await post({ pax: 3 })).body.code).toBe('TOO_MANY_GUESTS');
+    expect((await post({ rooms: 2, pax: 4 })).body.code).toBe('INVALID_OTP'); // fits, so it reaches the OTP check
+    expect((await post({ amount: '1.00' })).status).toBe(400);
+    expect((await ctx.api().post(`${V1}/public/bookings/request-otp`).send({ phone: '12345' })).status).toBe(400);
+    expect((await ctx.api().post(`${V1}/public/bookings/request-otp`).send({ phone: '+91 9600000009' })).status).toBe(200);
+  });
+});
+
 describe('API contract with the front-ends', () => {
   it('login returns tokens at the top level and in data; refresh and logout work', async () => {
     const res = await ctx.api().post(`${V1}/auth/staff/login`).send({ identifier: '9100000002', password: 'password-for-tests' }).expect(200);

@@ -19,8 +19,10 @@ import { FeedbackModule } from './feedback/feedback.module';
 import { ServiceRequestsModule } from './service-requests/service-requests.module';
 import { ReportsModule } from './reports/reports.module';
 import { GuestModule } from './guest/guest.module';
+import { PublicModule } from './public/public.module';
 
 export const DOMAIN_MODULES = [
+  PublicModule,
   UsersModule,
   RoomTypesModule,
   FolioModule,

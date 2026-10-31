@@ -65,6 +65,7 @@ Values match the front-ends' `src/data/seed.js`. **Menu veg flags and descriptio
 | Staff | `POST /auth/staff/login` with phone or email + password | 12h access, 30d refresh via `POST /auth/refresh`; `POST /auth/logout` revokes both |
 | Guest | `POST /auth/guest/request-otp`, then `verify-otp`, with room number + phone | Scoped to one stay; dead at check-out |
 | Visitor | `POST /auth/guest/public-token` | Menu, room types, booking requests only |
+| Public | None | `GET /public/room-types`; booking via `POST /public/bookings/request-otp` then `POST /public/bookings`, with the phone proven by OTP |
 
 Send `Authorization: Bearer <token>`. Guest routes take no ids: the stay always comes from the token.
 

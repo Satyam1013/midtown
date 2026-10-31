@@ -84,6 +84,7 @@ Other events: `room.status.changed`, `entry.created`, `entry.updated`, `daybook.
 - **Date limits:** future dates, or dates over 7 days old, return `400` (`FUTURE_DATE`, `DATE_TOO_OLD`) unless OWNER.
 - **Rate at check-in:** only OWNER can check in at a rate other than the room's; others get `403 RATE_OVERRIDE_FORBIDDEN`. The app's current behaviour of sending the room rate is fine.
 - **Checked-out guests:** the guest's token returns `401 STAY_ENDED`, and the app's existing 401 handling signs them out.
+- **Public booking errors:** `400` with `INVALID_OTP`, `BULK_BOOKING`, `INVALID_DATES` or `TOO_MANY_GUESTS`; `429` with `TOO_MANY_REQUESTS`. Show `message` as it is.
 - **Guest booking list:** the backend has no endpoint for a guest to list their booking requests, so that list is lost on refresh.
 - **Online orders:** these don't post to the day book, because platform payouts aren't cash on the day.
 

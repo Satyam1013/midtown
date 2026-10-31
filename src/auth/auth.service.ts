@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import * as bcrypt from 'bcryptjs';
-import { createHmac, randomInt, timingSafeEqual } from 'crypto';
+import { randomInt, timingSafeEqual } from 'crypto';
 import { Model } from 'mongoose';
 import { Role } from '../common/enums';
 import { ApiError, notFound, unauthorized } from '../common/errors';
@@ -12,6 +12,7 @@ import { Room } from '../rooms/schemas/room.schema';
 import { Stay, StayStatus } from '../stays/schemas/stay.schema';
 import { User } from '../users/schemas/user.schema';
 import { RequestOtpDto, StaffLoginDto, VerifyOtpDto } from './dto/auth.dto';
+import { hashOtp } from './otp-hash';
 import { OtpChallenge } from './schemas/otp-challenge.schema';
 import { SmsService } from './sms.service';
 import { TokenService } from './token.service';
@@ -151,6 +152,6 @@ export class AuthService {
   }
 
   private hash(otp: string) {
-    return createHmac('sha256', this.config.getOrThrow<string>('JWT_ACCESS_SECRET')).update(otp).digest('hex');
+    return hashOtp(otp, this.config.getOrThrow<string>('JWT_ACCESS_SECRET'));
   }
 }

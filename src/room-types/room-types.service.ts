@@ -15,8 +15,10 @@ export class RoomTypesService {
     private readonly tx: TransactionService,
   ) {}
 
-  list() {
-    return this.types.find().sort({ sortOrder: 1 }).lean();
+  async list() {
+    const types = await this.types.find().sort({ sortOrder: 1 }).lean();
+    // The guest app reads the number; `size` holds it as "180 sq ft".
+    return types.map((t) => ({ ...t, sizeSqft: Number.parseInt(t.size, 10) || null }));
   }
 
   /** New tariff also applies to rooms on the old rate. Current stays keep the rate they agreed. */

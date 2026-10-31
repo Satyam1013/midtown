@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { ClientSession, Model, Types } from 'mongoose';
 import { pageOf } from '../common/dto/common.dto';
 import { badRequest, conflict, notFound } from '../common/errors';
 import { Paged } from '../common/interceptors/response.interceptor';
@@ -53,13 +53,14 @@ export class BookingsService {
   }
 
   /** Guest app request. The amount is worked out here from the tariff. */
-  async createFromGuest(dto: GuestBookingDto) {
+  async createFromGuest(dto: GuestBookingDto, beforeCreate?: (session: ClientSession) => Promise<void>) {
     const type = await this.requireType(dto.roomTypeId);
     this.assertDates(dto.arrivalDate, dto.departureDate);
     if (dto.arrivalDate < this.dates.today()) throw badRequest('INVALID_DATES', 'Arrival cannot be in the past');
     const nights = this.dates.daysBetween(dto.arrivalDate, dto.departureDate);
     const amount = dec(type.tariff).times(nights).times(dto.rooms);
     const booking = await this.tx.run(async ({ session }) => {
+      await beforeCreate?.(session);
       const seq = await this.counters.next('guest-booking', session);
       const [created] = await this.bookings.create(
         [

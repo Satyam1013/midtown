@@ -24,6 +24,6 @@ import { TokenService } from './token.service';
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
-  exports: [TokenService, GuestScopeService, GuestStayGuard],
+  exports: [TokenService, GuestScopeService, GuestStayGuard, SmsService],
 })
 export class AuthModule {}
