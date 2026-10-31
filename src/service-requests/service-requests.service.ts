@@ -6,6 +6,8 @@ import { notFound } from '../common/errors';
 import { Paged } from '../common/interceptors/response.interceptor';
 import { Principal, userObjectId } from '../common/interfaces/principal';
 import { EventsService } from '../notifications/events.service';
+import { Stay } from '../stays/schemas/stay.schema';
+import { withStayLabels } from '../stays/stay-labels';
 import { RequestQueryDto } from './dto/service-request.dto';
 import { ServiceRequest, ServiceRequestKey, ServiceRequestStatus } from './schemas/service-request.schema';
 
@@ -23,6 +25,7 @@ const LABELS: Record<ServiceRequestKey, string> = {
 export class ServiceRequestsService {
   constructor(
     @InjectModel(ServiceRequest.name) private readonly requests: Model<ServiceRequest>,
+    @InjectModel(Stay.name) private readonly stays: Model<Stay>,
     private readonly events: EventsService,
   ) {}
 
@@ -33,7 +36,7 @@ export class ServiceRequestsService {
       this.requests.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       this.requests.countDocuments(filter),
     ]);
-    return new Paged(items, { page, limit, total });
+    return new Paged(await withStayLabels(this.stays, items), { page, limit, total });
   }
 
   listForStay(stayId: Types.ObjectId) {

@@ -18,6 +18,7 @@ import { FolioLine, FolioSource } from '../folio/schemas/folio-line.schema';
 import { MenuItem } from '../menu/schemas/menu-item.schema';
 import { EventsService } from '../notifications/events.service';
 import { Stay, StayStatus } from '../stays/schemas/stay.schema';
+import { withStayLabels } from '../stays/stay-labels';
 import { KotItemDto, KotQueryDto, SettleBillDto } from './dto/kot.dto';
 import { Kot, KotBillTo, KotSource, KotStatus } from './schemas/kot.schema';
 
@@ -57,16 +58,7 @@ export class KotsService {
       this.kots.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       this.kots.countDocuments(filter),
     ]);
-    const stays = await this.stays
-      .find({ _id: { $in: items.map((k) => k.stayId).filter(Boolean) } })
-      .select('roomId guestName')
-      .populate({ path: 'roomId', select: 'number' })
-      .lean();
-    const stayById = new Map(stays.map((s) => [String(s._id), s]));
-    const rows = items.map((k) => {
-      const stay: any = k.stayId ? stayById.get(String(k.stayId)) : null;
-      return { ...k, roomNumber: stay?.roomId?.number ?? null, guestName: stay?.guestName ?? null };
-    });
+    const rows = await withStayLabels(this.stays, items);
     return new Paged(rows, { page, limit, total });
   }
 

@@ -46,12 +46,12 @@ Show the `taxable`, `cgst`, `sgst` and `total` returned on each KOT and invoice.
 ### 7. Manager app: guest service requests
 Guests can send requests, but no staff screen shows them.
 
-- `GET /service-requests?status=SENT` returns `[{ id, stayId, key, label, note, status, createdAt }]`.
+- `GET /service-requests?status=SENT` returns `[{ id, stayId, roomNumber, guestName, key, label, note, status, createdAt }]`.
 - `PATCH /service-requests/:id` with `{ "status": "IN_PROGRESS" }` or `"DONE"`.
 - A `key` of `checkout` is a guest's check-out request.
 
 ### 8. Manager app: guest feedback (OWNER and MANAGER)
-`GET /feedback` returns `[{ stayId, rating, text, createdAt }]`.
+`GET /feedback` returns `[{ stayId, roomNumber, guestName, rating, text, createdAt }]`. STAFF gets `403`, so show this only to OWNER and MANAGER.
 
 ### 9. Manager app: optional owner tools
 - User management: `GET /users`, `POST /users`, `PATCH /users/:id`.

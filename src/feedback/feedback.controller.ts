@@ -6,6 +6,8 @@ import { Roles } from '../common/decorators';
 import { PageQueryDto, pageOf } from '../common/dto/common.dto';
 import { MANAGEMENT } from '../common/enums';
 import { Paged } from '../common/interceptors/response.interceptor';
+import { Stay } from '../stays/schemas/stay.schema';
+import { withStayLabels } from '../stays/stay-labels';
 import { Feedback } from './schemas/feedback.schema';
 
 @ApiTags('Back office')
@@ -13,7 +15,10 @@ import { Feedback } from './schemas/feedback.schema';
 @Roles(...MANAGEMENT)
 @Controller('feedback')
 export class FeedbackController {
-  constructor(@InjectModel(Feedback.name) private readonly feedback: Model<Feedback>) {}
+  constructor(
+    @InjectModel(Feedback.name) private readonly feedback: Model<Feedback>,
+    @InjectModel(Stay.name) private readonly stays: Model<Stay>,
+  ) {}
 
   @Get()
   async list(@Query() q: PageQueryDto) {
@@ -22,6 +27,6 @@ export class FeedbackController {
       this.feedback.find().sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
       this.feedback.countDocuments(),
     ]);
-    return new Paged(items, { page, limit, total });
+    return new Paged(await withStayLabels(this.stays, items), { page, limit, total });
   }
 }

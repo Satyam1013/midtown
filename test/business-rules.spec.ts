@@ -319,6 +319,22 @@ describe('Guest security and orders', () => {
     await ctx.api().patch(`${V1}/kots/${kot.id}/status`).set(bearer(ctx.token.KITCHEN)).send({ status: 'PREPARING' }).expect(200);
   });
 
+  it('staff see guest requests and feedback with room and guest; guests update nothing', async () => {
+    const created = await ctx.api().post(`${V1}/guest/service-requests`).set(bearer(guestA)).send({ key: 'laundry', note: 'Two shirts' }).expect(201);
+    const id = created.body.data.id;
+    await ctx.api().post(`${V1}/guest/feedback`).set(bearer(guestA)).send({ rating: 4, text: 'Nice' }).expect(201);
+
+    const list = await ctx.api().get(`${V1}/service-requests`).query({ status: 'SENT' }).set(staff()).expect(200);
+    expect(list.body.data.find((r: any) => r.id === id)).toMatchObject({ roomNumber: '203', guestName: 'Guest A', label: 'Laundry pickup' });
+    const updated = await ctx.api().patch(`${V1}/service-requests/${id}`).set(staff()).send({ status: 'IN_PROGRESS' }).expect(200);
+    expect(updated.body.data.status).toBe('IN_PROGRESS');
+    await ctx.api().patch(`${V1}/service-requests/${id}`).set(bearer(guestA)).send({ status: 'DONE' }).expect(403);
+
+    const feedback = await ctx.api().get(`${V1}/feedback`).set(bearer(ctx.token.MANAGER)).expect(200);
+    expect(feedback.body.data[0]).toMatchObject({ roomNumber: '203', guestName: 'Guest A', rating: 4 });
+    await ctx.api().get(`${V1}/feedback`).set(staff()).expect(403);
+  });
+
   it('a pay-now order stays off the folio', async () => {
     const before = await ctx.api().get(`${V1}/guest/folio`).set(bearer(guestA)).expect(200);
     await ctx.api().post(`${V1}/guest/orders`).set(bearer(guestA))
