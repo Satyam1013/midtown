@@ -42,6 +42,9 @@ export async function bootApp(): Promise<Ctx> {
   const types = await model('RoomType').insertMany(
     data.roomTypes.map((t) => ({ ...t, perks: [...t.perks], tariff: toD128(t.tariff) })),
   );
+  await model('RoomType').insertMany(
+    data.categoryRoomTypes.map((t) => ({ ...t, tariff: null, beds: '', size: '', sleeps: 4, blurb: '', perks: [] })),
+  );
   await model('Room').insertMany(
     data.rooms.map((r) => {
       const type = types.find((t: any) => t.name === r.type) as any;

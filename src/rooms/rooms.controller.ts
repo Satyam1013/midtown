@@ -4,7 +4,7 @@ import { Types } from 'mongoose';
 import { Roles } from '../common/decorators';
 import { ALL_STAFF, DESK, MANAGEMENT } from '../common/enums';
 import { ParseObjectIdPipe } from '../common/pipes/parse-object-id.pipe';
-import { CreateRoomDto, SetRoomStatusDto } from './dto/room.dto';
+import { CreateRoomDto, SetRoomStatusDto, UpdateRoomDto } from './dto/room.dto';
 import { RoomsService } from './rooms.service';
 
 @ApiTags('Rooms')
@@ -30,6 +30,13 @@ export class RoomsController {
   @Post('mark-all-clean')
   markAllClean() {
     return this.rooms.markAllClean();
+  }
+
+  /** Category, type and prices; stays already in progress keep their rate. */
+  @Roles(...MANAGEMENT)
+  @Patch(':id')
+  update(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @Body() dto: UpdateRoomDto) {
+    return this.rooms.update(id, dto);
   }
 
   @Patch(':id/status')

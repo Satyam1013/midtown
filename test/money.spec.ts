@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { BusinessDateService } from '../src/common/services/business-date.service';
 import { TaxService } from '../src/common/services/tax.service';
 import { dec, toD128 } from '../src/common/utils/money';
+import { nightlyRate } from '../src/config/pricing';
 
 describe('money and tax', () => {
   const tax = new TaxService();
@@ -32,5 +33,23 @@ describe('business date', () => {
 
   it('rejects impossible dates', () => {
     expect(dates.isRealDate('2026-02-30')).toBe(false);
+  });
+});
+
+describe('guest pricing rule', () => {
+  const room = { rate: toD128('1000'), singleRate: toD128('1000'), doubleRate: toD128('1400') };
+
+  it('1 → single, 2 → double, more → double + 300 each', () => {
+    expect([1, 2, 3, 4].map((g) => nightlyRate(room, g).toFixed(2))).toEqual(['1000.00', '1400.00', '1700.00', '2000.00']);
+  });
+
+  it('rejects fewer than 1 or more than 4 guests', () => {
+    expect(() => nightlyRate(room, 0)).toThrow();
+    expect(() => nightlyRate(room, 5)).toThrow();
+  });
+
+  it('older rooms with only `rate` price both occupancies at it, with no automatic +300', () => {
+    const legacy = { rate: toD128('1800') };
+    expect([1, 2, 3].map((g) => nightlyRate(legacy, g).toFixed(2))).toEqual(['1800.00', '1800.00', '2100.00']);
   });
 });

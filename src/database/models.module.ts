@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { AuditLog, AuditLogSchema } from '../audit/schemas/audit-log.schema';
 import { Attendance, AttendanceSchema } from '../attendance/schemas/attendance.schema';
 import { OtpChallenge, OtpChallengeSchema } from '../auth/schemas/otp-challenge.schema';
 import { Booking, BookingSchema } from '../bookings/schemas/booking.schema';
@@ -17,6 +18,7 @@ import { RoomType, RoomTypeSchema } from '../room-types/schemas/room-type.schema
 import { Room, RoomSchema } from '../rooms/schemas/room.schema';
 import { ServiceRequest, ServiceRequestSchema } from '../service-requests/schemas/service-request.schema';
 import { Staff, StaffSchema } from '../staff/schemas/staff.schema';
+import { RoomShift, RoomShiftSchema } from '../stays/schemas/room-shift.schema';
 import { Stay, StaySchema } from '../stays/schemas/stay.schema';
 import { StockItem, StockItemSchema } from '../stock/schemas/stock-item.schema';
 import { StockMovement, StockMovementSchema } from '../stock/schemas/stock-movement.schema';
@@ -27,6 +29,8 @@ import { User, UserSchema } from '../users/schemas/user.schema';
 // rather than through a web of module imports.
 const models = MongooseModule.forFeature([
   { name: Attendance.name, schema: AttendanceSchema },
+  { name: AuditLog.name, schema: AuditLogSchema },
+  { name: RoomShift.name, schema: RoomShiftSchema },
   { name: OtpChallenge.name, schema: OtpChallengeSchema },
   { name: Booking.name, schema: BookingSchema },
   { name: CashTxn.name, schema: CashTxnSchema },

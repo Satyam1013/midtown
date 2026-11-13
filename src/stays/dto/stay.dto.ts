@@ -1,46 +1,52 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsMongoId, IsNotEmpty, IsOptional, IsString, MaxLength, Min, ValidateNested } from 'class-validator';
+import { IsEnum, IsInt, IsMongoId, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import { IsBusinessDate, IsClockTime, IsDecimal } from '../../common/dto/common.dto';
 import { PaymentMode } from '../../common/enums';
+import { MAX_GUESTS, MIN_GUESTS } from '../../config/pricing';
 
 export class CheckInDto {
-  @IsMongoId()
   @ApiProperty({ type: String })
+  @IsMongoId()
   roomId: string;
 
-  @IsString() @IsNotEmpty() @MaxLength(100)
   @ApiProperty({ type: String })
+  @IsString() @IsNotEmpty() @MaxLength(100)
   guestName: string;
 
-  @IsOptional() @IsString() @MaxLength(20)
   @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @MaxLength(20)
   phone?: string;
 
-  @IsOptional() @IsString() @MaxLength(30)
   @ApiPropertyOptional({ type: String, nullable: true })
+  @IsOptional() @IsString() @MaxLength(30)
   vehicle?: string | null;
 
   /** Defaults to the current date in the hotel's timezone. */
-  @IsOptional() @IsBusinessDate()
   @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsBusinessDate()
   businessDate?: string;
 
-  @IsOptional() @IsBusinessDate()
   @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsBusinessDate()
   checkOut?: string;
 
-  @IsOptional() @IsInt() @Min(1)
   @ApiPropertyOptional({ type: Number })
+  @IsOptional() @IsInt() @Min(1)
   nights?: number;
 
-  /** Ignored unless it differs from the room's rate, which only OWNER may do. */
-  @IsOptional() @IsDecimal({ positive: true })
+  /** 1–4, default 1. Decides the rate. */
+  @ApiPropertyOptional({ type: Number })
+  @IsOptional() @IsInt() @Min(MIN_GUESTS) @Max(MAX_GUESTS)
+  guests?: number;
+
+  /** Accepted for compatibility and ignored: the server works the rate out. */
   @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsDecimal({ positive: true })
   rate?: string;
 
-  @IsOptional() @IsMongoId()
   @ApiPropertyOptional({ type: String, nullable: true })
+  @IsOptional() @IsMongoId()
   bookingId?: string | null;
 }
 
@@ -51,55 +57,97 @@ export enum StayPaymentKind {
 }
 
 export class StayPaymentDto {
-  @IsEnum(StayPaymentKind)
   @ApiProperty({ enum: StayPaymentKind })
+  @IsEnum(StayPaymentKind)
   kind: StayPaymentKind;
 
-  @IsDecimal({ positive: true })
   @ApiProperty({ type: String })
+  @IsDecimal({ positive: true })
   amount: string;
 
-  @IsEnum(PaymentMode)
   @ApiProperty({ enum: PaymentMode })
+  @IsEnum(PaymentMode)
   mode: PaymentMode;
 
-  @IsBusinessDate()
   @ApiProperty({ type: String })
+  @IsBusinessDate()
   businessDate: string;
 
-  @IsClockTime()
   @ApiProperty({ type: String })
+  @IsClockTime()
   time: string;
 
-  @IsOptional() @IsString() @MaxLength(300)
   @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @MaxLength(300)
   narration?: string;
 }
 
 export class UpdateStayDto {
-  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(100)
   @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(100)
   guestName?: string;
 
-  @IsOptional() @IsString() @MaxLength(20)
   @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @MaxLength(20)
   phone?: string;
 
-  @IsOptional() @IsString() @MaxLength(30)
   @ApiPropertyOptional({ type: String, nullable: true })
+  @IsOptional() @IsString() @MaxLength(30)
   vehicle?: string | null;
 
-  @IsOptional() @IsBusinessDate()
   @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsBusinessDate()
   checkOut?: string;
 
-  @IsOptional() @ValidateNested() @Type(() => StayPaymentDto)
+  /** New guest count. Only nights from businessDate onwards are repriced. */
+  @ApiPropertyOptional({ type: Number })
+  @IsOptional() @IsInt() @Min(MIN_GUESTS) @Max(MAX_GUESTS)
+  guests?: number;
+
+  /** The date a guest-count change takes effect; defaults to today. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsBusinessDate()
+  businessDate?: string;
+
   @ApiPropertyOptional({ type: StayPaymentDto })
+  @IsOptional() @ValidateNested() @Type(() => StayPaymentDto)
   payment?: StayPaymentDto;
 }
 
 export class CheckOutDto {
-  @IsOptional() @IsBusinessDate()
   @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsBusinessDate()
   businessDate?: string;
+}
+
+export class ShiftRoomDto {
+  /** The guest's ROOM_SHIFT service request. Required: shifts happen only on request. */
+  @ApiProperty({ type: String })
+  @IsMongoId()
+  requestId: string;
+
+  @ApiProperty({ type: String })
+  @IsMongoId()
+  toRoomId: string;
+
+  @ApiProperty({ type: Number })
+  @IsInt() @Min(MIN_GUESTS) @Max(MAX_GUESTS)
+  guests: number;
+
+  /** Accepted and ignored: the new rate comes from the target room. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsDecimal({ positive: true })
+  rate?: string;
+
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @MaxLength(300)
+  reason?: string;
+
+  @ApiProperty({ type: String })
+  @IsBusinessDate()
+  businessDate: string;
+
+  @ApiProperty({ type: String })
+  @IsClockTime()
+  time: string;
 }

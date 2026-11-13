@@ -9,6 +9,7 @@ import { dec, toD128 } from '../common/utils/money';
 import { CounterService } from '../database/counter.service';
 import { TransactionService } from '../database/transaction.service';
 import { EventsService } from '../notifications/events.service';
+import { RoomTypesService } from '../room-types/room-types.service';
 import { RoomType } from '../room-types/schemas/room-type.schema';
 import { BookingQueryDto, CreateBookingDto, GuestBookingDto } from './dto/booking.dto';
 import { Booking, BookingSource, BookingStatus } from './schemas/booking.schema';
@@ -22,6 +23,7 @@ export class BookingsService {
     private readonly counters: CounterService,
     private readonly dates: BusinessDateService,
     private readonly events: EventsService,
+    private readonly roomTypes: RoomTypesService,
   ) {}
 
   async list(q: BookingQueryDto) {
@@ -58,7 +60,8 @@ export class BookingsService {
     this.assertDates(dto.arrivalDate, dto.departureDate);
     if (dto.arrivalDate < this.dates.today()) throw badRequest('INVALID_DATES', 'Arrival cannot be in the past');
     const nights = this.dates.daysBetween(dto.arrivalDate, dto.departureDate);
-    const amount = dec(type.tariff).times(nights).times(dto.rooms);
+    const tariff = type.tariff ?? (await this.roomTypes.lowestRates()).get(String(type._id)) ?? null;
+    const amount = dec(tariff).times(nights).times(dto.rooms);
     const booking = await this.tx.run(async ({ session }) => {
       await beforeCreate?.(session);
       const seq = await this.counters.next('guest-booking', session);

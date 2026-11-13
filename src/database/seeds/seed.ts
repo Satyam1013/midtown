@@ -65,9 +65,21 @@ async function main() {
           photoUrl: null,
         });
       }
+      for (const t of data.categoryRoomTypes) {
+        c.roomTypes += await upsert(roomTypes, { name: t.name }, {
+          ...t,
+          tariff: null,
+          beds: '',
+          size: '',
+          sleeps: 4,
+          blurb: '',
+          perks: [],
+          photoUrl: null,
+        });
+      }
       const typeByName = new Map<string, { _id: Types.ObjectId; tariff: Types.Decimal128 }>();
-      for (const t of await roomTypes.find({}, { name: 1, tariff: 1 }).session(session).lean()) {
-        typeByName.set(t.name, { _id: t._id, tariff: t.tariff });
+      for (const t of await roomTypes.find({ tariff: { $ne: null } }, { name: 1, tariff: 1 }).session(session).lean()) {
+        typeByName.set(t.name, { _id: t._id, tariff: t.tariff! });
       }
 
       for (const r of data.rooms) {
@@ -78,6 +90,8 @@ async function main() {
           floor: r.floor,
           roomTypeId: type._id,
           rate: type.tariff,
+          singleRate: type.tariff,
+          doubleRate: type.tariff,
           status: RoomStatus.VACANT,
         });
       }

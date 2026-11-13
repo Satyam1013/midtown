@@ -20,6 +20,11 @@ export class CheckoutRequestDto {
 }
 
 export class SetRequestStatusDto {
+  /** Staff note; required when rejecting. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @MaxLength(300)
+  remark?: string;
+
   @IsEnum(ServiceRequestStatus)
   @ApiProperty({ enum: ServiceRequestStatus })
   status: ServiceRequestStatus;

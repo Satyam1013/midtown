@@ -79,7 +79,9 @@ Responses are `{ data, meta }` and errors `{ statusCode, code, message }`. Login
 - **Room status:** check-in → OCCUPIED, check-out → DIRTY, housekeeping → VACANT; manual changes only to and from OOO.
 - **GST:** rooms 12%, food 5%, calculated on the server from database prices, to the paisa.
 - **Business date:** `YYYY-MM-DD`, Asia/Kolkata, at most 7 days old and not in the future, unless OWNER.
-- **Check-in folio:** one line of tariff × nights + 12% GST, rewritten when the stay's dates change.
+- **Room pricing:** each room has a category (`AC` / `NON_AC`), a single and a double rate. Nightly rate: 1 guest → single, 2 → double, 3–4 → double + ₹300 per extra guest (`EXTRA_GUEST_CHARGE` in `src/config/pricing.ts`). The server always works the rate out; a rate sent by an app is ignored.
+- **Room charges:** a stay is billed in segments (`roomCharges[]`), each one TARIFF folio line of rate × nights + 12% GST. A guest-count change or a room shift ends the current segment, so earlier nights keep their price.
+- **Room shift:** only in answer to a guest's `ROOM_SHIFT` service request, via `POST /stays/:id/shift`. It moves the stay, swaps room statuses, adjusts the folio and closes the request in one transaction, with no day-book entry. Shifts and guest-count changes are written to `audit_logs`.
 - **Soft delete:** every collection has `deletedAt`, excluded from default queries. Opt out with `.setOptions({ withDeleted: true })`.
 
 ## Socket.IO
@@ -119,5 +121,7 @@ See [.env.example](.env.example). Everything is validated at startup.
 - Set the environment variables above, with `NODE_ENV=production` and without `PORT`.
 
 **Seed once**, from your machine, with `.env` holding the Atlas URI and real `OWNER_*` values: `npm run seed`.
+
+**Per-guest pricing migration:** `npm run migrate:room-pricing` gives existing rooms `singleRate = doubleRate = rate` and existing in-house stays one room-charge segment. It is idempotent, and the app falls back the same way without it.
 
 The app builds indexes at startup, shuts down gracefully and reconnects to MongoDB automatically.

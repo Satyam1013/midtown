@@ -400,7 +400,7 @@ describe('Public browsing and booking', () => {
 
   it('room types need no token', async () => {
     const res = await ctx.api().get(`${V1}/public/room-types`).expect(200);
-    expect(res.body.data).toHaveLength(4);
+    expect(res.body.data).toHaveLength(9); // 4 original + 5 category types
     expect(res.body.data[0]).toMatchObject({ name: 'Standard', tariff: 1800, sizeSqft: 180, sleeps: 2 });
   });
 

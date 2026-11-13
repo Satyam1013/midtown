@@ -50,6 +50,18 @@ export const roomTypes = [
   },
 ] as const;
 
+// Fixed category types for per-room pricing. Rooms are priced one by one
+// (single/double rate), so these have no tariff. Beds, size and blurb are
+// unknown and left empty for the hotel to fill in; sleeps is 4, the most
+// guests the pricing rule allows.
+export const categoryRoomTypes = [
+  { name: 'Non AC Standard', category: 'NON_AC', sortOrder: 5 },
+  { name: 'Non AC New Standard', category: 'NON_AC', sortOrder: 6 },
+  { name: 'AC Standard', category: 'AC', sortOrder: 7 },
+  { name: 'AC Deluxe', category: 'AC', sortOrder: 8 },
+  { name: 'AC Executive', category: 'AC', sortOrder: 9 },
+] as const;
+
 export type RoomTypeName = (typeof roomTypes)[number]['name'];
 
 // 3 floors × 6 rooms. Each room's rate defaults to its type's tariff.

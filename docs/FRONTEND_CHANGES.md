@@ -77,6 +77,32 @@ Other events: `room.status.changed`, `entry.created`, `entry.updated`, `daybook.
 ### 11. Manager app: make check-in with advance one step
 `src/store/HotelContext.jsx` calls `POST /stays` and then `PATCH /stays/:id` for the advance. If the second call fails, the guest is checked in with no advance. The toast shows the error, but staff need to re-enter the payment from Edit Stay. Check-out with a final payment has the same two-step pattern.
 
+## Room categories, guest pricing and room shifts (manager and guest apps)
+
+All additive: existing calls keep working.
+
+**Rooms**
+- `GET /rooms` now returns `category` (`AC` / `NON_AC`, or `null` on older rooms), `singleRate`, `doubleRate` (`rate` = `singleRate`) and `roomType.category`.
+- `POST /rooms`: `{ number, floor, category, roomType: "AC Deluxe", singleRate, doubleRate }`. Both rates are required with a category. Errors: `TYPE_CATEGORY_MISMATCH`, `RATES_REQUIRED`. The old body still works.
+- `PATCH /rooms/:id` (OWNER, MANAGER): any of `category`, `roomType` or `roomTypeId`, `singleRate`, `doubleRate`. Stays in progress keep their rate.
+- Types: `Non AC Standard`, `Non AC New Standard` (NON_AC); `AC Standard`, `AC Deluxe`, `AC Executive` (AC). The four original types stay, so existing rooms need moving to the new types.
+
+**Stays**
+- `POST /stays`: send `guests` (1–4). Any `rate` sent is ignored; the response has the server's rate.
+- `PATCH /stays/:id`: `{ guests, businessDate }` reprices nights from `businessDate` onwards.
+- `currentStay` (in `GET /rooms`) and every stay response include `guests`, `rate`, `nights`, `roomCharges[]` and `shifts[]`:
+  - `roomCharges[]`: `{ label, roomNumber, guests, rate, nights, amount, billed }`, where `amount` = rate × nights before GST and `billed` = that plus 12% GST.
+  - `shifts[]`: `{ fromRoomNumber, toRoomNumber, fromRate, toRate, kind, date, nightsBefore, adjustment }`.
+- Check-out returns `bill: { roomCharges, food, otherCharges, payments, total }`.
+
+**Room shift**
+- Guest app: `POST /guest/service-requests` with `{ "key": "ROOM_SHIFT", "note": "..." }`. A second open one returns `409 SHIFT_REQUEST_OPEN`.
+- Manager app: a ROOM_SHIFT request in the requests list gets two actions:
+  - Shift: `POST /stays/:stayId/shift` with `{ requestId, toRoomId, guests, businessDate, time, reason }`. Errors: `400 INVALID_SHIFT_REQUEST`, `409 SHIFT_REQUEST_CLOSED`, `409 ROOM_NOT_VACANT`, `400 NO_NIGHTS_LEFT`.
+  - Reject: `PATCH /service-requests/:id` with `{ "status": "REJECTED", "remark": "..." }`. The remark is required.
+  - Marking a ROOM_SHIFT request `DONE` through `PATCH` returns `409 USE_SHIFT_ENDPOINT`.
+- New request statuses `REJECTED` and `EXPIRED` (open shift requests expire at check-out). Show them, and the `remark`, in both apps.
+
 ## Behaviour to expect
 
 - **Duplicate rule on stay payments:** a second payment of the same type and amount for the same guest, room and date returns `409 DUPLICATE_ENTRY` with `entryId`. This is the client's rule. Change the amount or edit the existing entry.

@@ -22,6 +22,6 @@ export class ServiceRequestsController {
 
   @Patch(':id')
   setStatus(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @Body() dto: SetRequestStatusDto, @CurrentUser() user: Principal) {
-    return this.requests.setStatus(id, dto.status, user);
+    return this.requests.setStatus(id, dto.status, user, dto.remark);
   }
 }

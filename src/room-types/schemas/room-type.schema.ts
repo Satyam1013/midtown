@@ -1,5 +1,6 @@
 import { Prop, Schema } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
+import { RoomCategory } from '../../rooms/schemas/room.schema';
 import { buildSchema, LIVE, money } from '../../database/build-schema';
 
 @Schema({ collection: 'room_types', timestamps: true })
@@ -8,17 +9,24 @@ export class RoomType {
   @Prop({ required: true, trim: true })
   name: string;
 
-  /** Rack rate per night, before GST. */
-  @Prop(money())
-  tariff: Types.Decimal128;
+  /** AC / NON_AC for the fixed types; null for the original four. */
+  @Prop({ type: String, enum: [...Object.values(RoomCategory), null], default: null })
+  category: RoomCategory | null;
 
-  @Prop({ required: true })
+  /**
+   * Rack rate per night, before GST. Null for the category types, whose
+   * rooms are priced one by one; lists then show the lowest room's rate.
+   */
+  @Prop(money({ required: false, default: null }))
+  tariff: Types.Decimal128 | null;
+
+  @Prop({ type: String, default: '' })
   beds: string;
 
-  @Prop({ required: true })
+  @Prop({ type: String, default: '' })
   size: string;
 
-  @Prop({ required: true, min: 1 })
+  @Prop({ required: true, min: 1, default: 2 })
   sleeps: number;
 
   @Prop({ default: '' })

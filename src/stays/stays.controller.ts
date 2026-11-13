@@ -5,7 +5,7 @@ import { CurrentUser, Roles } from '../common/decorators';
 import { DESK } from '../common/enums';
 import { Principal } from '../common/interfaces/principal';
 import { ParseObjectIdPipe } from '../common/pipes/parse-object-id.pipe';
-import { CheckInDto, CheckOutDto, UpdateStayDto } from './dto/stay.dto';
+import { CheckInDto, CheckOutDto, ShiftRoomDto, UpdateStayDto } from './dto/stay.dto';
 import { StaysService } from './stays.service';
 
 @ApiTags('Stays')
@@ -28,6 +28,12 @@ export class StaysController {
   @Patch(':id')
   update(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @Body() dto: UpdateStayDto, @CurrentUser() user: Principal) {
     return this.stays.update(id, dto, user);
+  }
+
+  @HttpCode(200)
+  @Post(':id/shift')
+  shift(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @Body() dto: ShiftRoomDto, @CurrentUser() user: Principal) {
+    return this.stays.shift(id, dto, user);
   }
 
   @HttpCode(200)

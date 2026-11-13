@@ -15,7 +15,8 @@
     "db:down": "docker compose down",
     "seed": "ts-node -r tsconfig-paths/register src/database/seeds/seed.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "migrate:room-pricing": "ts-node -r tsconfig-paths/register src/database/seeds/migrate-room-pricing.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.2.8",
