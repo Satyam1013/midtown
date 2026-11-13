@@ -132,56 +132,163 @@ describe('Rule 2: atomic financial writes', () => {
   });
 });
 
-describe('Rule 3: day book', () => {
-  // A past date, so these tests don't close the day the others post to.
-  const dayOffset = (n: number) => {
+describe('Business day (shift)', () => {
+  const day = (n: number) => {
     const d = new Date(`${ctx.today}T00:00:00Z`);
     d.setUTCDate(d.getUTCDate() + n);
     return d.toISOString().slice(0, 10);
   };
+  const mgr = () => bearer(ctx.token.MANAGER);
+  const current = async () => (await ctx.api().get(`${V1}/business-day/current`).set(staff()).expect(200)).body.data;
+  const daybook = async (date: string) => (await ctx.api().get(`${V1}/daybook`).query({ date }).set(staff()).expect(200)).body.data;
+  const register = async (date: string) => (await ctx.api().get(`${V1}/daybook/register`).query({ date }).set(staff()).expect(200)).body.data;
+  const close = (body: object) => ctx.api().post(`${V1}/business-day/close`).set(mgr()).send({ time: '23:30', ...body });
+  const start = (body: object) => ctx.api().post(`${V1}/business-day/start`).set(staff()).send({ time: '08:00', ...body });
 
-  it('5. closing = opening + credits - debits, and carries to the next day', async () => {
-    const date = dayOffset(-3);
-    const manager = bearer(ctx.token.MANAGER);
-    await ctx.api().patch(`${V1}/daybook/opening`).set(manager).send({ businessDate: date, openingBalance: '1000.10' }).expect(200);
-    const post = async (amount: string, dc: string, guestName: string) =>
-      ctx.api().post(`${V1}/entries`).set(staff()).send(await newEntry({ businessDate: date, amount, dc, guestName })).expect(201);
-    await post('250.20', 'CREDIT', 'A');
-    await post('0.10', 'CREDIT', 'B');
-    await post('100.05', 'DEBIT', 'C');
-    await ctx.api().post(`${V1}/expenses`).set(staff()).send({ businessDate: date, head: 'Laundry', mode: 'CASH', amount: '50.00' }).expect(201);
-
-    const closed = await ctx.api().post(`${V1}/daybook/close`).set(manager).send({ businessDate: date }).expect(200);
-    expect(closed.body.data.closingBalance).toBe(1100.35); // 1000.10 + 250.30 - 150.05
-    expect(closed.body.data.closedByUserId).toBeTruthy();
-
-    const next = await ctx.api().get(`${V1}/daybook`).query({ date: dayOffset(-2) }).set(staff()).expect(200);
-    expect(next.body.data.openingBalance).toBe(1100.35);
+  it('a second start while a day is open is 409; current shows the open day', async () => {
+    const res = await start({ businessDate: day(5), openingBalance: '0' }).expect(409);
+    expect(res.body.code).toBe('DAY_ALREADY_OPEN');
+    expect(await current()).toMatchObject({ status: 'OPEN', businessDate: ctx.today, openingBalance: 0, openedByName: 'OWNER' });
   });
 
-  it('STAFF cannot close the day', async () => {
-    await ctx.api().post(`${V1}/daybook/close`).set(staff()).send({ businessDate: dayOffset(-4) }).expect(403);
+  it('postings ignore a client businessDate and land on the open day', async () => {
+    const res = await ctx.api().post(`${V1}/entries`).set(staff()).send(await newEntry({ businessDate: '2020-01-01', amount: '111.00', guestName: 'Dated' })).expect(201);
+    expect(res.body.data).toMatchObject({ businessDate: ctx.today, source: 'MANUAL' });
+    const exp = await ctx.api().post(`${V1}/expenses`).set(staff()).send({ businessDate: '2020-01-01', head: 'Fuel', mode: 'CASH', amount: '40.00', time: '09:15' }).expect(201);
+    expect(exp.body.data).toMatchObject({ businessDate: ctx.today, time: '09:15' });
   });
 
-  it('6. a closed date rejects STAFF and MANAGER', async () => {
-    const date = dayOffset(-5);
-    await ctx.api().post(`${V1}/daybook/close`).set(bearer(ctx.token.MANAGER)).send({ businessDate: date }).expect(200);
-    for (const token of [ctx.token.STAFF, ctx.token.MANAGER]) {
-      const res = await ctx.api().post(`${V1}/entries`).set(bearer(token)).send(await newEntry({ businessDate: date })).expect(409);
+  it('checkout, restaurant bill, expense and online payout each appear in the register once; totals match /daybook', async () => {
+    const stay = await checkIn(ctx, '301', 'Register Guest', '9811000001');
+    const owed = (await ctx.api().get(`${V1}/rooms`).set(staff())).body.data.find((r: any) => r.number === '301').currentStay.balance;
+    const out = await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff())
+      .send({ businessDate: '2020-01-01', payment: { amount: String(owed), mode: 'UPI', time: '11:00' } }).expect(200);
+    expect(out.body.data).toMatchObject({ shortfall: 0, folioBalance: '0.00' });
+    const kot = await ctx.api().post(`${V1}/kots`).set(staff()).send({ tableLabel: 'Table 9', billTo: 'PAY_NOW', items: [{ menuItemId: await ctx.menuId('Jeera Rice'), qty: 2 }] }).expect(201);
+    await ctx.api().post(`${V1}/bills/settle`).set(staff()).send({ kotIds: [kot.body.data.kot.id], mode: 'CASH', businessDate: '2020-01-01', time: '13:00' }).expect(200);
+    await ctx.api().post(`${V1}/expenses`).set(staff()).send({ head: 'Vegetables', vendor: 'Mandi', mode: 'CASH', amount: '250.00', time: '14:00' }).expect(201);
+    await ctx.api().post(`${V1}/online-orders`).set(staff()).send({ platform: 'Zomato', orderId: 'ZOM-1', items: [{ name: 'Thali', qty: 1, price: '500.00' }], amount: '500.00', commissionPct: '20' }).expect(201);
+
+    const lines = await register(ctx.today);
+    const of = (source: string) => lines.filter((l: any) => l.source === source);
+    expect(of('CHECKOUT').filter((l: any) => l.guestName === 'Register Guest')).toHaveLength(1);
+    expect(of('RESTAURANT').filter((l: any) => l.guestName === 'Table 9')).toEqual([expect.objectContaining({ amount: 315, dc: 'CREDIT', time: '13:00' })]);
+    expect(of('EXPENSE').filter((l: any) => l.type === 'Vegetables')).toEqual([expect.objectContaining({ kind: 'expense', amount: 250, dc: 'DEBIT' })]);
+    expect(of('ONLINE')).toEqual([expect.objectContaining({ amount: 400, mode: 'BANK', dc: 'CREDIT' })]);
+    const times = lines.map((l: any) => l.time);
+    expect(times).toEqual([...times].sort());
+
+    const totals = lines.reduce((t: any, l: any) => ({ ...t, [l.dc]: t[l.dc] + l.amount }), { CREDIT: 0, DEBIT: 0 });
+    const book = await daybook(ctx.today);
+    expect(book.credits).toBeCloseTo(totals.CREDIT);
+    expect(book.debits).toBeCloseTo(totals.DEBIT);
+    const entries = (await ctx.api().get(`${V1}/entries`).query({ date: ctx.today }).set(staff()).expect(200)).body.data;
+    expect(entries.every((e: any) => 'source' in e && 'shortfall' in e)).toBe(true);
+    const summary = (await ctx.api().get(`${V1}/expenses/summary`).query({ date: ctx.today }).set(staff()).expect(200)).body.data;
+    expect(summary.byHead.find((h: any) => h.head === 'Vegetables')).toMatchObject({ total: 250, count: 1 });
+  });
+
+  it('checkout records the unpaid part as a shortfall and keeps it on the folio', async () => {
+    const stay = await checkIn(ctx, '303', 'Short Payer', '9811000002'); // Suite 5200 × 2 + 12%
+    const out = (await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff())
+      .send({ payment: { amount: '10000.00', mode: 'CASH', time: '12:00' } }).expect(200)).body.data;
+    expect(out.shortfall).toBe(1648); // 11648 − 10000
+    expect(out.folioBalance).toBe('1648.00');
+    expect(out.entry).toMatchObject({ amount: 10000, shortfall: 1648, source: 'CHECKOUT' });
+    const report = (await ctx.api().get(`${V1}/daybook/shortages`).query({ from: ctx.today, to: ctx.today }).set(mgr()).expect(200)).body.data;
+    expect(report.entries).toEqual([expect.objectContaining({ guestName: 'Short Payer', roomNumber: '303', shortfall: 1648 })]);
+  });
+
+  it('lines from other modules are not editable through /entries', async () => {
+    const checkout = (await ctx.model('DayRegisterEntry').findOne({ source: 'CHECKOUT' }).lean()) as any;
+    const res = await ctx.api().patch(`${V1}/entries/${checkout._id}`).set(staff()).send({ amount: '1.00' }).expect(400);
+    expect(res.body).toMatchObject({ code: 'ENTRY_NOT_EDITABLE', message: expect.stringContaining('checkout') });
+    await ctx.api().delete(`${V1}/entries/${checkout._id}`).set(mgr()).expect(400);
+  });
+
+  it('service request charges go to the folio or, paid now, to the register', async () => {
+    const stay = await checkIn(ctx, '304', 'Laundry Guest', '9811000003');
+    const req = await ctx.model('ServiceRequest').create({ stayId: stay.id, key: 'laundry', label: 'Laundry pickup' });
+    await ctx.api().post(`${V1}/service-requests/${req._id}/charge`).set(staff()).send({ amount: '120.00', billTo: 'ROOM' }).expect(200);
+    await ctx.api().post(`${V1}/service-requests/${req._id}/charge`).set(staff()).send({ amount: '120.00', billTo: 'ROOM' }).expect(409);
+    expect(await ctx.model('FolioLine').countDocuments({ stayId: stay.id, source: 'OTHER' })).toBe(1);
+    const taxi = await ctx.model('ServiceRequest').create({ stayId: stay.id, key: 'taxi', label: 'Book a taxi' });
+    await ctx.api().post(`${V1}/service-requests/${taxi._id}/charge`).set(staff()).send({ amount: '300.00', billTo: 'PAY_NOW', mode: 'CASH', time: '15:00' }).expect(200);
+    expect((await register(ctx.today)).filter((l: any) => l.source === 'REQUEST')).toEqual([expect.objectContaining({ amount: 300, type: 'Book a taxi' })]);
+  });
+
+  it('opening balance edits only while open, and are audited', async () => {
+    await ctx.api().patch(`${V1}/daybook/opening`).set(mgr()).send({ businessDate: ctx.today, openingBalance: '1000.00', note: 'Float from safe' }).expect(200);
+    expect(await ctx.model('AuditLog').countDocuments({ action: 'OPENING_BALANCE_CHANGE', businessDate: ctx.today })).toBe(1);
+    await ctx.api().patch(`${V1}/daybook/opening`).set(mgr()).send({ businessDate: day(9), openingBalance: '5.00' }).expect(409);
+  });
+
+  it('5. close: closing = opening + credits − debits; shortage needs a note', async () => {
+    const book = await daybook(ctx.today);
+    const lines = await register(ctx.today);
+    const cashNet = lines.filter((l: any) => l.mode === 'CASH').reduce((n: number, l: any) => n + (l.dc === 'CREDIT' ? l.amount : -l.amount), 0);
+    const expected = 1000 + cashNet;
+    expect(await close({ businessDate: day(3), countedCash: '0' }).expect(409)).toBeTruthy(); // wrong date
+    const noNote = await close({ businessDate: ctx.today, countedCash: String((expected - 50).toFixed(2)) }).expect(400);
+    expect(noNote.body.code).toBe('NOTE_REQUIRED');
+    await ctx.api().post(`${V1}/business-day/close`).set(staff()).send({ businessDate: ctx.today, countedCash: '0', time: '23:00' }).expect(403);
+    const closed = (await close({ businessDate: ctx.today, countedCash: String((expected - 50).toFixed(2)), note: 'Change given wrongly' }).expect(200)).body.data;
+    expect(closed).toMatchObject({ status: 'CLOSED', businessDate: ctx.today, shortage: 50, closeNote: 'Change given wrongly', closedByName: 'MANAGER' });
+    expect(closed.expectedCash).toBeCloseTo(expected);
+    expect(closed.closingBalance).toBeCloseTo(1000 + book.credits - book.debits);
+    expect(await daybook(ctx.today)).toMatchObject({ status: 'CLOSED', shortage: 50, countedCash: expected - 50, closeNote: 'Change given wrongly' });
+    const report = (await ctx.api().get(`${V1}/daybook/shortages`).query({ from: ctx.today, to: ctx.today }).set(mgr()).expect(200)).body.data;
+    expect(report.days).toEqual([expect.objectContaining({ businessDate: ctx.today, shortage: 50 })]);
+  });
+
+  it('with no open day every posting is 409 DAY_NOT_OPEN', async () => {
+    expect(await current()).toMatchObject({ status: 'CLOSED', businessDate: null, lastClosedDate: ctx.today, suggestedNextDate: day(1) });
+    const blocked = [
+      ctx.api().post(`${V1}/entries`).set(staff()).send(await newEntry({ guestName: 'Late', amount: '5.00' })),
+      ctx.api().post(`${V1}/expenses`).set(staff()).send({ head: 'Fuel', mode: 'CASH', amount: '10.00' }),
+      ctx.api().post(`${V1}/online-orders`).set(staff()).send({ platform: 'Swiggy', orderId: 'S-9', items: [{ name: 'X', qty: 1, price: '10' }], amount: '10.00', commissionPct: '0' }),
+    ];
+    for (const res of await Promise.all(blocked)) expect([res.status, res.body.code]).toEqual([409, 'DAY_NOT_OPEN']);
+  });
+
+  it('6 and 7. a closed day rejects edits from everyone, OWNER included', async () => {
+    const manual = (await ctx.model('DayRegisterEntry').findOne({ businessDate: ctx.today, source: 'MANUAL' }).lean()) as any;
+    for (const t of [ctx.token.STAFF, ctx.token.OWNER]) {
+      const res = await ctx.api().patch(`${V1}/entries/${manual._id}`).set(bearer(t)).send({ narration: 'late fix' }).expect(409);
       expect(res.body.code).toBe('DAY_CLOSED');
     }
   });
 
-  it('7. OWNER can still post to a closed date', async () => {
-    await ctx.api().post(`${V1}/entries`).set(bearer(ctx.token.OWNER)).send(await newEntry({ businessDate: dayOffset(-5) })).expect(201);
+  it('starting with a different opening balance needs a note, and is audited', async () => {
+    const last = (await current()).lastClosingBalance;
+    const res = await start({ businessDate: day(1), openingBalance: String(last + 10) }).expect(400);
+    expect(res.body.code).toBe('NOTE_REQUIRED');
+    expect((await start({ businessDate: ctx.today, openingBalance: String(last) }).expect(409)).body.code).toBe('DAY_ALREADY_CLOSED');
+    const ok = (await start({ businessDate: day(1), openingBalance: String(last + 10), note: 'Owner added float' }).expect(200)).body.data;
+    expect(ok).toMatchObject({ status: 'OPEN', businessDate: day(1), startNote: 'Owner added float' });
+    expect(await ctx.model('AuditLog').countDocuments({ action: { $in: ['DAY_START', 'DAY_CLOSE'] } })).toBeGreaterThanOrEqual(3);
   });
 
-  it('business date limits: future and over 7 days old are rejected, OWNER may override', async () => {
-    const future = await newEntry({ businessDate: dayOffset(1), guestName: 'Future' });
-    const old = await newEntry({ businessDate: dayOffset(-8), guestName: 'Old' });
-    expect((await ctx.api().post(`${V1}/entries`).set(staff()).send(future).expect(400)).body.code).toBe('FUTURE_DATE');
-    expect((await ctx.api().post(`${V1}/entries`).set(staff()).send(old).expect(400)).body.code).toBe('DATE_TOO_OLD');
-    await ctx.api().post(`${V1}/entries`).set(bearer(ctx.token.OWNER)).send(old).expect(201);
+  it('the business date comes from the shift, not the clock: postings after midnight keep it', async () => {
+    // The open day is tomorrow's date while the clock says today; a close at 00:30 still closes it.
+    const res = await ctx.api().post(`${V1}/entries`).set(staff()).send(await newEntry({ guestName: 'Night Owl', amount: '75.00', time: '00:20' })).expect(201);
+    expect(res.body.data.businessDate).toBe(day(1));
+    const lines = await register(day(1));
+    const opening = (await current()).openingBalance;
+    const cash = lines.filter((l: any) => l.mode === 'CASH').reduce((n: number, l: any) => n + (l.dc === 'CREDIT' ? l.amount : -l.amount), 0);
+    // Excess: counted more than expected.
+    const closed = (await close({ businessDate: day(1), countedCash: String((opening + cash + 20).toFixed(2)), note: 'Tip left in drawer', time: '00:30' }).expect(200)).body.data;
+    expect(closed).toMatchObject({ businessDate: day(1), shortage: -20, closedTime: '00:30' });
+  });
+
+  it('OWNER can reopen a closed day; the legacy close still works', async () => {
+    await ctx.api().post(`${V1}/business-day/reopen`).set(mgr()).send({ businessDate: day(1), note: 'fix' }).expect(403);
+    const reopened = (await ctx.api().post(`${V1}/business-day/reopen`).set(bearer(ctx.token.OWNER)).send({ businessDate: day(1), note: 'Missed an expense' }).expect(200)).body.data;
+    expect(reopened).toMatchObject({ status: 'OPEN', businessDate: day(1), shortage: null });
+    await ctx.api().post(`${V1}/daybook/close`).set(mgr()).send({ businessDate: day(1) }).expect(200);
+    // Leave a day open for the tests that follow.
+    const last = (await current()).lastClosingBalance;
+    await start({ businessDate: day(2), openingBalance: String(last) }).expect(200);
   });
 });
 

@@ -5,6 +5,25 @@ import { IsBusinessDate, IsClockTime, IsDecimal } from '../../common/dto/common.
 import { PaymentMode } from '../../common/enums';
 import { MAX_GUESTS, MIN_GUESTS } from '../../config/pricing';
 
+/** Money taken at check-in or check-out. */
+export class TakePaymentDto {
+  @ApiProperty({ type: String })
+  @IsDecimal({ min: '0' })
+  amount: string;
+
+  @ApiProperty({ enum: PaymentMode })
+  @IsEnum(PaymentMode)
+  mode: PaymentMode;
+
+  @ApiProperty({ type: String })
+  @IsClockTime()
+  time: string;
+
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @MaxLength(300)
+  narration?: string;
+}
+
 export class CheckInDto {
   @ApiProperty({ type: String })
   @IsMongoId()
@@ -48,6 +67,11 @@ export class CheckInDto {
   @ApiPropertyOptional({ type: String, nullable: true })
   @IsOptional() @IsMongoId()
   bookingId?: string | null;
+
+  /** Advance taken at check-in; posted with the check-in, on the open business day. */
+  @ApiPropertyOptional({ type: TakePaymentDto })
+  @IsOptional() @ValidateNested() @Type(() => TakePaymentDto)
+  advance?: TakePaymentDto;
 }
 
 export enum StayPaymentKind {
@@ -69,9 +93,10 @@ export class StayPaymentDto {
   @IsEnum(PaymentMode)
   mode: PaymentMode;
 
-  @ApiProperty({ type: String })
-  @IsBusinessDate()
-  businessDate: string;
+  /** Ignored: payments always go to the open business day. Accepted for older apps. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsBusinessDate()
+  businessDate?: string;
 
   @ApiProperty({ type: String })
   @IsClockTime()
@@ -81,6 +106,7 @@ export class StayPaymentDto {
   @IsOptional() @IsString() @MaxLength(300)
   narration?: string;
 }
+
 
 export class UpdateStayDto {
   @ApiPropertyOptional({ type: String })
@@ -115,9 +141,15 @@ export class UpdateStayDto {
 }
 
 export class CheckOutDto {
+  /** Ignored: checkout always posts to the open business day. Accepted for older apps. */
   @ApiPropertyOptional({ type: String })
   @IsOptional() @IsBusinessDate()
   businessDate?: string;
+
+  /** Money received at checkout. Anything still owed is recorded as the shortfall. */
+  @ApiPropertyOptional({ type: TakePaymentDto })
+  @IsOptional() @ValidateNested() @Type(() => TakePaymentDto)
+  payment?: TakePaymentDto;
 }
 
 export class ShiftRoomDto {

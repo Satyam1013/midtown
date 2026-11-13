@@ -3,6 +3,20 @@ import { HydratedDocument, Types } from 'mongoose';
 import { DebitCredit, PaymentMode } from '../../common/enums';
 import { businessDate, buildSchema, LIVE, money, ref } from '../../database/build-schema';
 
+/** Where a register line came from. Only MANUAL lines are edited through /entries. */
+export enum EntrySource {
+  MANUAL = 'MANUAL',
+  CHECKIN = 'CHECKIN',
+  CHECKOUT = 'CHECKOUT',
+  STAY_PAYMENT = 'STAY_PAYMENT',
+  RESTAURANT = 'RESTAURANT',
+  ROOM_SERVICE = 'ROOM_SERVICE',
+  ONLINE = 'ONLINE',
+  REQUEST = 'REQUEST',
+  REFUND = 'REFUND',
+  OTHER = 'OTHER',
+}
+
 @Schema({ collection: 'day_register_entries', timestamps: true })
 export class DayRegisterEntry {
   @Prop(businessDate())
@@ -51,6 +65,14 @@ export class DayRegisterEntry {
 
   @Prop(ref('User'))
   createdByUserId: Types.ObjectId;
+
+  /** Null on entries from before sources; derived when read. */
+  @Prop({ type: String, enum: [...Object.values(EntrySource), null], default: null })
+  source: EntrySource | null;
+
+  /** Checkout only: folio balance the guest left unpaid. Never written off silently. */
+  @Prop(money({ required: false, default: null }))
+  shortfall: Types.Decimal128 | null;
 }
 
 export type DayRegisterEntryDocument = HydratedDocument<DayRegisterEntry>;
@@ -59,6 +81,7 @@ export const DayRegisterEntrySchema = buildSchema(DayRegisterEntry);
 DayRegisterEntrySchema.index({ businessDate: 1, createdAt: 1 });
 DayRegisterEntrySchema.index({ roomId: 1, businessDate: 1 });
 DayRegisterEntrySchema.index({ stayId: 1 });
+DayRegisterEntrySchema.index({ shortfall: 1, businessDate: 1 });
 // Database backstop for the "no double entry" rule. The service checks
 // first and answers 409 DUPLICATE_ENTRY; this index catches the race where
 // two desks submit the same entry at the same moment. Guest name compares

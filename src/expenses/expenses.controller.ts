@@ -4,6 +4,7 @@ import { CurrentUser, Roles } from '../common/decorators';
 import { DateQueryDto } from '../common/dto/common.dto';
 import { DESK } from '../common/enums';
 import { Principal } from '../common/interfaces/principal';
+import { DateOnlyQueryDto } from '../daybook/dto/daybook.dto';
 import { CreateExpenseDto } from './dto/expense.dto';
 import { ExpensesService } from './expenses.service';
 
@@ -17,6 +18,11 @@ export class ExpensesController {
   @Get()
   list(@Query() q: DateQueryDto) {
     return this.expenses.list(q);
+  }
+
+  @Get('summary')
+  summary(@Query() q: DateOnlyQueryDto) {
+    return this.expenses.summary(q.date);
   }
 
   @Post()

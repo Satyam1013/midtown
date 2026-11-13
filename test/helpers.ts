@@ -68,6 +68,11 @@ export async function bootApp(): Promise<Ctx> {
     token[role] = res.body.accessToken;
   }
 
+  // Money postings need an open business day.
+  const today = app.get(BusinessDateService).today();
+  await api().post('/api/v1/business-day/start').set({ Authorization: `Bearer ${token.OWNER}` })
+    .send({ businessDate: today, openingBalance: '0', time: '08:00' }).expect(200);
+
   return {
     app,
     api,

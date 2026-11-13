@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
-import { DaybookController } from './daybook.controller';
+import { BusinessDayController, DaybookController } from './daybook.controller';
 import { DaybookService } from './daybook.service';
 
-@Module({ controllers: [DaybookController], providers: [DaybookService], exports: [DaybookService] })
+@Module({ controllers: [DaybookController, BusinessDayController], providers: [DaybookService], exports: [DaybookService] })
 export class DaybookModule {}

@@ -1,12 +1,18 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsEnum, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
-import { IsBusinessDate, IsDecimal } from '../../common/dto/common.dto';
+import { IsBusinessDate, IsClockTime, IsDecimal } from '../../common/dto/common.dto';
 import { PaymentMode } from '../../common/enums';
 
 export class CreateExpenseDto {
-  @IsBusinessDate()
-  @ApiProperty({ type: String })
-  businessDate: string;
+  /** Ignored: postings always go to the open business day. Accepted for older apps. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsBusinessDate()
+  businessDate?: string;
+
+  /** Front-desk clock time; defaults to now. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsClockTime()
+  time?: string;
 
   @IsString() @IsNotEmpty() @MaxLength(60)
   @ApiProperty({ type: String })

@@ -1,10 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import Decimal from 'decimal.js';
 import { ClientSession, Model, Types } from 'mongoose';
 import { AuditService } from '../audit/audit.service';
 import { AuditAction } from '../audit/schemas/audit-log.schema';
 import { Booking, BookingStatus } from '../bookings/schemas/booking.schema';
-import { DebitCredit } from '../common/enums';
+import { DebitCredit, PaymentMode } from '../common/enums';
 import { badRequest, conflict, notFound } from '../common/errors';
 import { Principal, userObjectId } from '../common/interfaces/principal';
 import { oidOrNull } from '../common/pipes/parse-object-id.pipe';
@@ -16,6 +17,7 @@ import { nightlyRate } from '../config/pricing';
 import { DaybookService } from '../daybook/daybook.service';
 import { TransactionService } from '../database/transaction.service';
 import { LedgerService } from '../entries/ledger.service';
+import { EntrySource } from '../entries/schemas/day-register-entry.schema';
 import { FolioService } from '../folio/folio.service';
 import { FolioLine, FolioSource } from '../folio/schemas/folio-line.schema';
 import { EventsService } from '../notifications/events.service';
@@ -112,6 +114,30 @@ export class StaysService {
       );
       stay.roomCharges = [segment] as any;
       await stay.save({ session });
+      let advance = null;
+      if (dto.advance && dec(dto.advance.amount).gt(0)) {
+        const businessDate = await this.daybook.requireOpenDay(session);
+        advance = await this.ledger.post(
+          {
+            businessDate,
+            time: dto.advance.time,
+            roomId: room._id,
+            stayId: stay._id,
+            guestName: stay.guestName,
+            phone: stay.phone,
+            vehicle: stay.vehicle,
+            type: 'Check-in',
+            mode: dto.advance.mode,
+            dc: DebitCredit.CREDIT,
+            amount: dto.advance.amount,
+            narration: dto.advance.narration ?? `Advance at check-in, room ${room.number}`,
+            source: EntrySource.CHECKIN,
+            createdByUserId: userObjectId(user),
+            folio: { head: 'Advance at check-in', source: FolioSource.PAYMENT },
+          },
+          session,
+        );
+      }
       if (dto.bookingId) {
         await this.bookings.updateOne({ _id: dto.bookingId }, { $set: { status: BookingStatus.CHECKED_IN } }, { session });
       }
@@ -119,6 +145,7 @@ export class StaysService {
       afterCommit(() => {
         this.events.toHotel('room.status.changed', { roomId: String(room._id), status: room.status });
         this.events.toHotelAndStay('stay.updated', stay._id, { stayId: String(stay._id) });
+        if (advance) this.events.toHotel('entry.created', { id: String(advance._id), businessDate: advance.businessDate });
       });
       return stay._id;
     });
@@ -127,8 +154,8 @@ export class StaysService {
 
   /** Edit a stay, with at most one advance, part payment or refund, and an optional guest-count change. */
   async update(id: Types.ObjectId, dto: UpdateStayDto, user: Principal) {
-    if (dto.payment) this.dates.assertAllowed(dto.payment.businessDate, user);
-    const effective = dto.businessDate ?? this.dates.today();
+    const openDate = await this.daybook.openDate();
+    const effective = dto.businessDate ?? openDate ?? this.dates.today();
     if (dto.guests !== undefined) this.dates.assertAllowed(effective, user);
     const current = await this.stays.findById(id).lean();
     if (!current) throw notFound('Stay');
@@ -192,7 +219,7 @@ export class StaysService {
       : () =>
           this.ledger.withDuplicateGuard(
             {
-              businessDate: dto.payment!.businessDate,
+              businessDate: openDate ?? '',
               roomId: current.roomId,
               type: PAYMENT_TYPE[dto.payment!.kind],
               amount: dto.payment!.amount,
@@ -310,9 +337,14 @@ export class StaysService {
     return this.present(stayId);
   }
 
+  /**
+   * Check-out posts one CHECKOUT line on the open business day for the money
+   * received. If the guest leaves owing money, the gap is stored as the
+   * line's shortfall and stays on the folio; nothing is written off.
+   */
   async checkOut(id: Types.ObjectId, dto: CheckOutDto, user: Principal) {
-    if (dto.businessDate) this.dates.assertAllowed(dto.businessDate, user);
     const result = await this.tx.run(async ({ session, afterCommit }) => {
+      const businessDate = await this.daybook.requireOpenDay(session);
       const stay = await this.stays.findOneAndUpdate(
         { _id: id, status: StayStatus.IN_HOUSE },
         { $set: { status: StayStatus.CHECKED_OUT, checkedOutAt: new Date() } },
@@ -329,15 +361,52 @@ export class StaysService {
         { $set: { status: ServiceRequestStatus.EXPIRED, remark: 'Guest checked out' } },
         { session },
       );
+
+      const owed = dec((await this.folio.balances([stay._id], session)).get(String(stay._id)));
+      const received = dec(dto.payment?.amount ?? '0');
+      const shortfall = Decimal.max(0, owed.minus(received));
+      let entry = null;
+      if (received.gt(0) || shortfall.gt(0)) {
+        entry = await this.ledger.post(
+          {
+            businessDate,
+            time: dto.payment?.time ?? this.dates.nowTime(),
+            roomId: stay.roomId,
+            stayId: stay._id,
+            guestName: stay.guestName,
+            phone: stay.phone,
+            vehicle: stay.vehicle,
+            type: 'Check-out',
+            mode: dto.payment?.mode ?? PaymentMode.CASH,
+            dc: DebitCredit.CREDIT,
+            amount: received.toFixed(2),
+            narration:
+              dto.payment?.narration ??
+              (shortfall.gt(0) ? `Settlement, room ${room?.number}: ${shortfall.toFixed(2)} unpaid` : `Settlement, room ${room?.number}`),
+            source: EntrySource.CHECKOUT,
+            shortfall: shortfall.gt(0) ? shortfall.toFixed(2) : null,
+            createdByUserId: userObjectId(user),
+            ...(received.gt(0) ? { folio: { head: 'Payment at check-out', source: FolioSource.PAYMENT } } : {}),
+          },
+          session,
+        );
+      }
       afterCommit(() => {
         this.events.toHotel('room.status.changed', { roomId: String(stay.roomId), status: room?.status });
         this.events.toHotelAndStay('stay.updated', stay._id, { stayId: String(stay._id), status: stay.status });
+        if (entry) this.events.toHotel('entry.created', { id: String(entry._id), businessDate });
         this.events.endStay(stay._id);
       });
-      return stay;
+      return { stay, entry, shortfall };
     });
-    const bill = await this.folio.summary(result._id);
-    return { stay: await this.present(result._id), folioBalance: bill.balance, bill: bill.breakdown };
+    const bill = await this.folio.summary(result.stay._id);
+    return {
+      stay: await this.present(result.stay._id),
+      entry: result.entry,
+      shortfall: toD128(result.shortfall),
+      folioBalance: bill.balance,
+      bill: bill.breakdown,
+    };
   }
 
   async inHouse() {
@@ -362,13 +431,14 @@ export class StaysService {
   private async postPayment(stay: StayDocument, roomNumber: string, p: StayPaymentDto, user: Principal, session: ClientSession) {
     const type = PAYMENT_TYPE[p.kind];
     const isRefund = p.kind === StayPaymentKind.REFUND;
-    await this.daybook.touchOpenDay(p.businessDate, user, session);
-    const key = { businessDate: p.businessDate, roomId: stay.roomId, type, amount: p.amount, guestName: stay.guestName };
+    // Any businessDate the app sent is ignored.
+    const businessDate = await this.daybook.requireOpenDay(session);
+    const key = { businessDate, roomId: stay.roomId, type, amount: p.amount, guestName: stay.guestName };
     const duplicate = await this.ledger.findDuplicate(key, session);
     if (duplicate) throw this.ledger.duplicateError(duplicate._id);
     return this.ledger.post(
       {
-        businessDate: p.businessDate,
+        businessDate,
         time: p.time,
         roomId: stay.roomId,
         stayId: stay._id,
@@ -381,6 +451,7 @@ export class StaysService {
         amount: p.amount,
         narration: p.narration ?? `${type}, room ${roomNumber}`,
         createdByUserId: userObjectId(user),
+        source: isRefund ? EntrySource.REFUND : EntrySource.STAY_PAYMENT,
         folio: { head: type, source: isRefund ? FolioSource.REFUND : FolioSource.PAYMENT },
       },
       session,

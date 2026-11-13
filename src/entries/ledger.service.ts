@@ -6,7 +6,7 @@ import { DebitCredit, PaymentMode } from '../common/enums';
 import { conflict } from '../common/errors';
 import { dec, toD128 } from '../common/utils/money';
 import { FolioLine, FolioSource } from '../folio/schemas/folio-line.schema';
-import { DayRegisterEntry, DayRegisterEntryDocument } from './schemas/day-register-entry.schema';
+import { DayRegisterEntry, DayRegisterEntryDocument, EntrySource } from './schemas/day-register-entry.schema';
 
 export interface PostInput {
   businessDate: string;
@@ -22,6 +22,9 @@ export interface PostInput {
   amount: string;
   narration?: string;
   createdByUserId: Types.ObjectId;
+  source: EntrySource;
+  /** Checkout only: balance left unpaid. */
+  shortfall?: string | null;
   /** When set, the entry also posts one folio line to stayId. */
   folio?: { head: string; source: FolioSource };
 }
@@ -51,9 +54,16 @@ export class LedgerService {
   ) {}
 
   async post(input: PostInput, session: ClientSession): Promise<DayRegisterEntryDocument> {
-    const { folio, amount, ...fields } = input;
+    const { folio, amount, shortfall, ...fields } = input;
     const [entry] = await this.entries.create(
-      [{ ...fields, guestName: (input.guestName ?? '').trim(), amount: toD128(amount) }],
+      [
+        {
+          ...fields,
+          guestName: (input.guestName ?? '').trim(),
+          amount: toD128(amount),
+          shortfall: shortfall ? toD128(shortfall) : null,
+        },
+      ],
       { session },
     );
     if (dec(amount).gt(0)) {

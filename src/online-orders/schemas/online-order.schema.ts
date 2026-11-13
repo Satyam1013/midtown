@@ -44,6 +44,10 @@ export class OnlineOrder {
   // The manager app sends no status on create and shows this title-cased.
   @Prop({ type: String, trim: true, default: 'PREPARING' })
   status: string;
+
+  /** The register line posting the payout. */
+  @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'DayRegisterEntry', default: null })
+  entryId: Types.ObjectId | null;
 }
 
 export type OnlineOrderDocument = HydratedDocument<OnlineOrder>;

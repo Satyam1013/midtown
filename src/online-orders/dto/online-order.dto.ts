@@ -18,9 +18,10 @@ export class OnlineOrderItemDto {
 }
 
 export class CreateOnlineOrderDto {
-  @IsBusinessDate()
-  @ApiProperty({ type: String })
-  businessDate: string;
+  /** Ignored: postings always go to the open business day. Accepted for older apps. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsBusinessDate()
+  businessDate?: string;
 
   @IsString() @IsNotEmpty() @MaxLength(30)
   @ApiProperty({ type: String })

@@ -1,6 +1,6 @@
 import { Prop, Schema } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
-import { buildSchema, ref } from '../../database/build-schema';
+import { buildSchema, money, ref } from '../../database/build-schema';
 
 export enum ServiceRequestKey {
   housekeeping = 'housekeeping',
@@ -42,6 +42,20 @@ export class ServiceRequest {
 
   @Prop({ type: String, enum: Object.values(ServiceRequestStatus), default: ServiceRequestStatus.SENT })
   status: ServiceRequestStatus;
+
+  /** Charge for the service (laundry, taxi …), set once. */
+  @Prop(money({ required: false, default: null }))
+  chargeAmount: Types.Decimal128 | null;
+
+  /** ROOM: on the folio, paid at checkout. PAY_NOW: a REQUEST line in the register. */
+  @Prop({ type: String, enum: ['ROOM', 'PAY_NOW', null], default: null })
+  chargeBillTo: 'ROOM' | 'PAY_NOW' | null;
+
+  @Prop(ref('DayRegisterEntry', { required: false }))
+  chargeEntryId: Types.ObjectId | null;
+
+  @Prop(ref('FolioLine', { required: false }))
+  chargeFolioLineId: Types.ObjectId | null;
 
   /** Staff note, e.g. why a room shift was rejected. */
   @Prop({ type: String, default: '' })

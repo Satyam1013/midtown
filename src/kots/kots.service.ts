@@ -14,6 +14,7 @@ import { CounterService } from '../database/counter.service';
 import { TransactionService } from '../database/transaction.service';
 import { DaybookService } from '../daybook/daybook.service';
 import { LedgerService } from '../entries/ledger.service';
+import { EntrySource } from '../entries/schemas/day-register-entry.schema';
 import { FolioLine, FolioSource } from '../folio/schemas/folio-line.schema';
 import { MenuItem } from '../menu/schemas/menu-item.schema';
 import { EventsService } from '../notifications/events.service';
@@ -144,9 +145,8 @@ export class KotsService {
 
   /** Settles PAY_NOW KOTs; the amount comes from the KOTs, never the client. */
   async settle(dto: SettleBillDto, user: Principal) {
-    this.dates.assertAllowed(dto.businessDate, user);
     return this.tx.run(async ({ session, afterCommit }) => {
-      await this.daybook.touchOpenDay(dto.businessDate, user, session);
+      const businessDate = await this.daybook.requireOpenDay(session);
       const ids = dto.kotIds.map(oid);
       const kots = await this.kots.find({ _id: { $in: ids } }).session(session);
       if (kots.length !== new Set(dto.kotIds).size) throw notFound('KOT');
@@ -159,10 +159,12 @@ export class KotsService {
       const label = kots[0].tableLabel ?? `KOT #${kots.map((k) => k.number).join(', #')}`;
       const entry = await this.ledger.post(
         {
-          businessDate: dto.businessDate,
+          businessDate,
           time: dto.time,
           guestName: label,
-          type: 'Restaurant',
+          // Room-service orders paid on delivery count apart from the restaurant.
+          source: kots.every((k) => k.stayId) ? EntrySource.ROOM_SERVICE : EntrySource.RESTAURANT,
+          type: kots.every((k) => k.stayId) ? 'Room service' : 'Restaurant',
           mode: dto.mode,
           dc: DebitCredit.CREDIT,
           amount: total.toFixed(2),

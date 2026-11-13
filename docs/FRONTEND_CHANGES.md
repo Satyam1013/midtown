@@ -103,6 +103,32 @@ All additive: existing calls keep working.
   - Marking a ROOM_SHIFT request `DONE` through `PATCH` returns `409 USE_SHIFT_ENDPOINT`.
 - New request statuses `REJECTED` and `EXPIRED` (open shift requests expire at check-out). Show them, and the `remark`, in both apps.
 
+## Business day, unified register and shortage (manager app)
+
+**⚠️ Required at once:** after this backend deploys, every money action returns `409 DAY_NOT_OPEN` until someone starts a business day. That covers entries, expenses, stay payments, checkout, bills, online orders and request charges.
+
+**Business day**
+- `GET /business-day/current` returns `{ status: OPEN|CLOSED|NONE, businessDate, openedAt, openedByName, openingBalance, lastClosingBalance, lastClosedDate, suggestedNextDate }`. Show this in the header in place of the "Today" working-date picker.
+- `POST /business-day/start` takes `{ businessDate, openingBalance, time, note }`. `note` is required when the opening balance differs from `lastClosingBalance`. Errors: `409 DAY_ALREADY_OPEN`, `409 DAY_ALREADY_CLOSED`, `400 NOTE_REQUIRED`. STAFF, MANAGER and OWNER can start.
+- `POST /business-day/close` takes `{ businessDate, countedCash, note, time }`. `note` is required when there's a shortage or excess (`400 NOTE_REQUIRED`). OWNER and MANAGER only.
+- `POST /business-day/reopen` takes `{ businessDate, note }`. OWNER only.
+- `GET /daybook?date=` adds `status, openedAt, openedByName, closedAt, closedByName, expectedCash, countedCash, shortage, closeNote`.
+- `PATCH /daybook/opening` works only while that day is open and takes an optional `note`.
+
+**Postings**
+- The app's `businessDate` is ignored on new postings; the server stamps the open day. Keep sending it if convenient, or drop it.
+- `POST /stays` takes an optional `advance: { amount, mode, time, narration }`. It's posted with the check-in, replacing the separate `PATCH` for the advance.
+- `POST /stays/:id/checkout` takes `payment: { amount, mode, time, narration }`. The response has `shortfall` (amount still owed) and `bill`. Use this in place of a `PART_PAYMENT` before checkout.
+- `POST /service-requests/:id/charge` takes `{ amount, billTo: ROOM|PAY_NOW, mode, time }`. `mode` is required for `PAY_NOW`. One charge per request.
+
+**Register**
+- `GET /daybook/register?date=` returns every money line sorted by time: `{ id, kind: entry|expense, source, time, roomNumber, guestName, phone, vehicle, type, mode, dc, amount, narration, shortfall }`.
+- Sources: `MANUAL`, `CHECKIN`, `CHECKOUT`, `STAY_PAYMENT`, `RESTAURANT`, `ROOM_SERVICE`, `ONLINE`, `REQUEST`, `EXPENSE`, `REFUND`. This replaces the app's own merge of entries, cash and expenses in `src/api/mappers.js`.
+- `GET /entries?date=` adds `source` and `shortfall`. Only `MANUAL` entries can be edited or deleted; others return `400 ENTRY_NOT_EDITABLE` naming their origin, so hide the edit button for them.
+- `GET /expenses?date=` now includes `time`.
+- `GET /expenses/summary?date=` returns `{ total, count, byHead[] }`.
+- `GET /daybook/shortages?from=&to=` returns `{ days[], entries[] }` (OWNER, MANAGER).
+
 ## Behaviour to expect
 
 - **Duplicate rule on stay payments:** a second payment of the same type and amount for the same guest, room and date returns `409 DUPLICATE_ENTRY` with `entryId`. This is the client's rule. Change the amount or edit the existing entry.

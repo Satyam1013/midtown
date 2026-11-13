@@ -8,6 +8,10 @@ export class Expense {
   @Prop(businessDate())
   businessDate: string;
 
+  /** Front-desk clock time, 'HH:mm'. */
+  @Prop({ type: String, default: null, match: /^\d{2}:\d{2}$/ })
+  time: string | null;
+
   @Prop({ required: true, trim: true })
   head: string;
 

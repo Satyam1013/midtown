@@ -10,11 +10,12 @@ export class AuditService {
   /** Written inside the caller's transaction, so the log matches what committed. */
   async record(
     action: AuditAction,
-    stayId: Types.ObjectId,
+    stayId: Types.ObjectId | null,
     userId: Types.ObjectId,
     details: Record<string, unknown>,
     session: ClientSession,
+    businessDate: string | null = null,
   ) {
-    await this.logs.create([{ action, stayId, userId, details }], { session });
+    await this.logs.create([{ action, stayId, userId, businessDate, details }], { session });
   }
 }
