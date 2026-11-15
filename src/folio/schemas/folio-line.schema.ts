@@ -32,6 +32,19 @@ export class FolioLine {
   /** KOT billed to the room (FOOD lines). */
   @Prop(ref('Kot', { required: false }))
   kotId: Types.ObjectId | null;
+
+  /** GST breakup of `amount` (a charge line). Null on lines from before breakups. */
+  @Prop({ type: Number, default: null })
+  gstPct: number | null;
+
+  @Prop(money({ required: false, default: null }))
+  taxable: Types.Decimal128 | null;
+
+  @Prop(money({ required: false, default: null }))
+  cgst: Types.Decimal128 | null;
+
+  @Prop(money({ required: false, default: null }))
+  sgst: Types.Decimal128 | null;
 }
 
 export type FolioLineDocument = HydratedDocument<FolioLine>;

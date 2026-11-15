@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { IsEnum, IsInt, IsMongoId, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsEnum, IsIn, IsInt, IsMongoId, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import { IsBusinessDate, IsClockTime, IsDecimal } from '../../common/dto/common.dto';
 import { PaymentMode } from '../../common/enums';
 import { MAX_GUESTS, MIN_GUESTS } from '../../config/pricing';
@@ -24,6 +24,24 @@ export class TakePaymentDto {
   narration?: string;
 }
 
+export class SplitPaymentDto {
+  @ApiProperty({ enum: PaymentMode })
+  @IsEnum(PaymentMode)
+  mode: PaymentMode;
+
+  @ApiProperty({ type: String })
+  @IsDecimal({ positive: true })
+  amount: string;
+
+  @ApiProperty({ type: String })
+  @IsClockTime()
+  time: string;
+
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @MaxLength(300)
+  narration?: string;
+}
+
 export class CheckInDto {
   @ApiProperty({ type: String })
   @IsMongoId()
@@ -32,6 +50,11 @@ export class CheckInDto {
   @ApiProperty({ type: String })
   @IsString() @IsNotEmpty() @MaxLength(100)
   guestName: string;
+
+  /** A returning customer picked from lookup. Without it the phone finds or creates one. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsMongoId()
+  customerId?: string;
 
   @ApiPropertyOptional({ type: String })
   @IsOptional() @IsString() @MaxLength(20)
@@ -150,13 +173,18 @@ export class CheckOutDto {
   @ApiPropertyOptional({ type: TakePaymentDto })
   @IsOptional() @ValidateNested() @Type(() => TakePaymentDto)
   payment?: TakePaymentDto;
+
+  /** Split payment: one register line per row, all in the checkout's transaction. Use instead of `payment`. */
+  @ApiPropertyOptional({ type: [SplitPaymentDto] })
+  @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => SplitPaymentDto)
+  payments?: SplitPaymentDto[];
 }
 
 export class ShiftRoomDto {
-  /** The guest's ROOM_SHIFT service request. Required: shifts happen only on request. */
-  @ApiProperty({ type: String })
-  @IsMongoId()
-  requestId: string;
+  /** The guest's ROOM_SHIFT request, closed as DONE by the shift. Omit for a shift the manager starts. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsMongoId()
+  requestId?: string;
 
   @ApiProperty({ type: String })
   @IsMongoId()
@@ -182,4 +210,66 @@ export class ShiftRoomDto {
   @ApiProperty({ type: String })
   @IsClockTime()
   time: string;
+}
+
+export class AddGuestDto {
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @MaxLength(100)
+  name?: string;
+
+  /** Finds or creates the guest's customer, as at check-in. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @MaxLength(20)
+  phone?: string;
+
+  /** The new total number of guests (2–4). */
+  @ApiProperty({ type: Number })
+  @IsInt() @Min(2)
+  guests: number;
+
+  /** Accepted and ignored: the server works the rate out. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsDecimal({ positive: true })
+  rate?: string;
+
+  /** The date the guest joins; defaults to the open business day. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsBusinessDate()
+  businessDate?: string;
+
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsClockTime()
+  time?: string;
+}
+
+export class SectionAmountsDto {
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsDecimal({ min: '0' })
+  stay?: string;
+
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsDecimal({ min: '0' })
+  food?: string;
+
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsDecimal({ min: '0' })
+  other?: string;
+}
+
+export class BillPrintDto {
+  @ApiProperty({ enum: ['MANUAL', 'GENERATED'] })
+  @IsIn(['MANUAL', 'GENERATED'])
+  type: 'MANUAL' | 'GENERATED';
+
+  @ApiProperty({ enum: ['combined', 'stay', 'food', 'other', 'separate'] })
+  @IsIn(['combined', 'stay', 'food', 'other', 'separate'])
+  which: 'combined' | 'stay' | 'food' | 'other' | 'separate';
+
+  @ApiProperty({ type: SectionAmountsDto })
+  @ValidateNested() @Type(() => SectionAmountsDto)
+  amounts: SectionAmountsDto;
+
+  @ApiProperty({ type: SectionAmountsDto })
+  @ValidateNested() @Type(() => SectionAmountsDto)
+  actualAmounts: SectionAmountsDto;
 }

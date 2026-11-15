@@ -70,6 +70,10 @@ export class DayRegisterEntry {
   @Prop({ type: String, enum: [...Object.values(EntrySource), null], default: null })
   source: EntrySource | null;
 
+  /** Covered by the no-duplicate index. False only for split checkout rows. */
+  @Prop({ type: Boolean, default: true })
+  dupCheck: boolean;
+
   /** Checkout only: folio balance the guest left unpaid. Never written off silently. */
   @Prop(money({ required: false, default: null }))
   shortfall: Types.Decimal128 | null;
@@ -89,9 +93,10 @@ DayRegisterEntrySchema.index({ shortfall: 1, businessDate: 1 });
 DayRegisterEntrySchema.index(
   { businessDate: 1, roomId: 1, type: 1, amount: 1, guestName: 1 },
   {
-    name: 'no_duplicate_entry',
+    // v2 adds dupCheck; EntriesModule drops the old `no_duplicate_entry` at startup.
+    name: 'no_duplicate_entry_v2',
     unique: true,
     collation: { locale: 'en', strength: 2 },
-    partialFilterExpression: { ...LIVE, roomId: { $type: 'objectId' }, amount: { $gt: 0 } },
+    partialFilterExpression: { ...LIVE, roomId: { $type: 'objectId' }, amount: { $gt: 0 }, dupCheck: true },
   },
 );

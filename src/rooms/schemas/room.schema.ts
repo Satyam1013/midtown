@@ -7,7 +7,31 @@ export enum RoomStatus {
   OCCUPIED = 'OCCUPIED',
   DIRTY = 'DIRTY',
   OOO = 'OOO',
+  /** Under repair: not sold, checked into, shifted to or booked. Set by a manager. */
+  MAINTENANCE = 'MAINTENANCE',
 }
+
+/** The fixed list of features a room can have. */
+export const ROOM_FEATURES = [
+  'AC',
+  'TV',
+  'Hot water / geyser',
+  'Wi-Fi',
+  'Attached bathroom',
+  'Balcony',
+  'Double bed',
+  'Twin beds',
+  'Extra bed available',
+  'Fridge',
+  'Sofa / seating',
+  'Work desk',
+  'Power backup',
+  'Window view',
+] as const;
+export type RoomFeature = (typeof ROOM_FEATURES)[number];
+
+/** Statuses in which a room can still be sold (DIRTY is cleaned before arrival). */
+export const SELLABLE_STATUSES = ['VACANT', 'DIRTY', 'OCCUPIED'];
 
 export enum RoomCategory {
   AC = 'AC',
@@ -45,6 +69,26 @@ export class Room {
   /** Legacy field, always equal to singleRate. Stays snapshot their own rate. */
   @Prop(money())
   rate: Types.Decimal128;
+
+  @Prop({ type: [String], enum: ROOM_FEATURES, default: [] })
+  features: RoomFeature[];
+
+  @Prop({ type: String, trim: true, default: '' })
+  description: string;
+
+  /** Set while status is MAINTENANCE, cleared on any other status. */
+  @Prop({ type: String, default: null })
+  maintenanceReason: string | null;
+
+  /** Expected back date, 'YYYY-MM-DD'. */
+  @Prop({ type: String, default: null })
+  maintenanceUntil: string | null;
+
+  @Prop({ type: Date, default: null })
+  maintenanceSince: Date | null;
+
+  @Prop(ref('User', { required: false }))
+  maintenanceByUserId: Types.ObjectId | null;
 }
 
 export type RoomDocument = HydratedDocument<Room>;

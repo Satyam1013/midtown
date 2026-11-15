@@ -2,6 +2,7 @@ import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 import { AuditModule } from './audit/audit.module';
+import { CustomersModule } from './customers/customers.module';
 import { AuthModule } from './auth/auth.module';
 import { CommonModule } from './common/common.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
@@ -19,6 +20,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     DatabaseModule,
     CommonModule,
     AuditModule,
+    CustomersModule,
     AuthModule,
     NotificationsModule,
     HealthModule,

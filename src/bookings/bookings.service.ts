@@ -39,6 +39,7 @@ export class BookingsService {
   async create(dto: CreateBookingDto) {
     await this.requireType(dto.roomTypeId);
     this.assertDates(dto.arrivalDate, dto.departureDate);
+    await this.roomTypes.assertSellable(dto.roomTypeId, dto.rooms);
     try {
       const booking = await this.bookings.create({
         ...dto,
@@ -57,6 +58,7 @@ export class BookingsService {
   /** Guest app request. The amount is worked out here from the tariff. */
   async createFromGuest(dto: GuestBookingDto, beforeCreate?: (session: ClientSession) => Promise<void>) {
     const type = await this.requireType(dto.roomTypeId);
+    await this.roomTypes.assertSellable(type._id, dto.rooms);
     this.assertDates(dto.arrivalDate, dto.departureDate);
     if (dto.arrivalDate < this.dates.today()) throw badRequest('INVALID_DATES', 'Arrival cannot be in the past');
     const nights = this.dates.daysBetween(dto.arrivalDate, dto.departureDate);

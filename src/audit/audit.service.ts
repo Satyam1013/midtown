@@ -13,9 +13,9 @@ export class AuditService {
     stayId: Types.ObjectId | null,
     userId: Types.ObjectId,
     details: Record<string, unknown>,
-    session: ClientSession,
+    session: ClientSession | null,
     businessDate: string | null = null,
   ) {
-    await this.logs.create([{ action, stayId, userId, businessDate, details }], { session });
+    await this.logs.create([{ action, stayId, userId, businessDate, details }], session ? { session } : {});
   }
 }

@@ -35,6 +35,10 @@ export class RoomCharge {
   /** The TARIFF folio line billing this segment (rate × nights + GST). */
   @Prop(ref('FolioLine', { required: false }))
   folioLineId: Types.ObjectId | null;
+
+  /** GST slab applied to this segment. */
+  @Prop({ type: Number, default: null })
+  gstPct: number | null;
 }
 export const RoomChargeSchema = SchemaFactory.createForClass(RoomCharge);
 
@@ -86,10 +90,27 @@ export class Stay {
 
   @Prop(ref('Booking', { required: false }))
   bookingId: Types.ObjectId | null;
+
+  /** GST mode fixed at check-in. Null on older stays, which keep 12% on top. */
+  @Prop({ type: { inclusive: { type: Boolean, required: true } }, default: null, _id: false })
+  gst: { inclusive: boolean } | null;
+
+  /** Sequential bill number, e.g. MTH/2026-27/00123, given once at check-out. */
+  @Prop({ type: String, default: null })
+  billNo: string | null;
+
+  @Prop({ type: String, default: null })
+  billDate: string | null;
+
+  /** The main guest. Null only on stays from before customers, until migrated. */
+  @Prop(ref('Customer', { required: false }))
+  customerId: Types.ObjectId | null;
 }
 
 export type StayDocument = HydratedDocument<Stay>;
 export const StaySchema = buildSchema(Stay);
+StaySchema.index({ customerId: 1, checkIn: -1 });
+StaySchema.index({ billNo: 1 }, { unique: true, name: 'one_bill_number', partialFilterExpression: { billNo: { $type: 'string' } } });
 
 // At most one live in-house stay per room.
 StaySchema.index(

@@ -10,6 +10,7 @@ import { Stay } from '../stays/schemas/stay.schema';
 import { withStayLabels } from '../stays/stay-labels';
 import { DebitCredit } from '../common/enums';
 import { BusinessDateService } from '../common/services/business-date.service';
+import { GstService } from '../common/services/gst.service';
 import { toD128 } from '../common/utils/money';
 import { TransactionService } from '../database/transaction.service';
 import { DaybookService } from '../daybook/daybook.service';
@@ -47,6 +48,7 @@ export class ServiceRequestsService {
     private readonly daybook: DaybookService,
     private readonly ledger: LedgerService,
     private readonly dates: BusinessDateService,
+    private readonly gst: GstService,
   ) {}
 
   async list(q: RequestQueryDto) {
@@ -119,11 +121,24 @@ export class ServiceRequestsService {
       if (request.chargeAmount) throw conflict('ALREADY_CHARGED', 'This request has already been charged');
       const stay = await this.stays.findById(request.stayId).session(session);
       if (!stay) throw notFound('Stay');
+      // `amount` is the service price; GST is added (or taken out) per settings.
+      const tax = this.gst.other(dto.amount);
 
       if (dto.billTo === 'ROOM') {
         if (stay.status !== StayStatus.IN_HOUSE) throw conflict('STAY_NOT_IN_HOUSE', 'The guest has checked out; take payment now');
         const [line] = await this.folio.create(
-          [{ stayId: stay._id, head: request.label, amount: toD128(dto.amount), source: FolioSource.OTHER }],
+          [
+            {
+              stayId: stay._id,
+              head: request.label,
+              amount: toD128(tax.total),
+              source: FolioSource.OTHER,
+              gstPct: this.gst.settings.otherPct,
+              taxable: toD128(tax.taxable),
+              cgst: toD128(tax.cgst),
+              sgst: toD128(tax.sgst),
+            },
+          ],
           { session },
         );
         request.chargeFolioLineId = line._id;
@@ -142,8 +157,8 @@ export class ServiceRequestsService {
             type: request.label,
             mode: dto.mode!,
             dc: DebitCredit.CREDIT,
-            amount: dto.amount,
-            narration: dto.narration ?? `${request.label} charge`,
+            amount: tax.total.toFixed(2),
+            narration: dto.narration ?? `${request.label} charge incl. ${this.gst.settings.otherPct}% GST`,
             source: EntrySource.REQUEST,
             createdByUserId: userObjectId(user),
           },
@@ -152,7 +167,7 @@ export class ServiceRequestsService {
         request.chargeEntryId = entry._id;
         afterCommit(() => this.events.toHotel('entry.created', { id: String(entry._id), businessDate }));
       }
-      request.chargeAmount = toD128(dto.amount);
+      request.chargeAmount = toD128(tax.total);
       request.chargeBillTo = dto.billTo;
       await request.save({ session });
       afterCommit(() =>

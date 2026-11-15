@@ -13,9 +13,9 @@ export class RoomShift {
   @Prop(ref('Stay'))
   stayId: Types.ObjectId;
 
-  /** The guest's ROOM_SHIFT service request this shift answered. */
-  @Prop(ref('ServiceRequest'))
-  requestId: Types.ObjectId;
+  /** The guest's ROOM_SHIFT request this shift answered; null for a shift the manager started. */
+  @Prop(ref('ServiceRequest', { required: false }))
+  requestId: Types.ObjectId | null;
 
   @Prop(ref('Room'))
   fromRoomId: Types.ObjectId;
@@ -59,4 +59,9 @@ export type RoomShiftDocument = HydratedDocument<RoomShift>;
 export const RoomShiftSchema = buildSchema(RoomShift);
 
 RoomShiftSchema.index({ stayId: 1, createdAt: 1 });
-RoomShiftSchema.index({ requestId: 1 }, { unique: true });
+// One shift per request. Partial, so any number of manager shifts (no request) can exist.
+// Replaces the old full unique index `requestId_1`, dropped at startup by StaysModule.
+RoomShiftSchema.index(
+  { requestId: 1 },
+  { unique: true, name: 'one_shift_per_request', partialFilterExpression: { requestId: { $type: 'objectId' } } },
+);

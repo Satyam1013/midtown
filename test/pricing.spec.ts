@@ -98,7 +98,7 @@ describe('Pricing by guest count', () => {
       const stay = await checkIn(room, `95000000${guests}0`, guests, 0, 2, { rate: '1.00' });
       expect(stay).toMatchObject({ guests, rate: expected[guests], nights: 2 });
       expect(stay.roomCharges).toEqual([expect.objectContaining({ roomNumber: room, guests, rate: expected[guests], nights: 2, amount: expected[guests] * 2 })]);
-      expect(await tariffTotal(stay.id)).toBeCloseTo(expected[guests] * 2 * 1.12);
+      expect(await tariffTotal(stay.id)).toBeCloseTo(expected[guests] * 2 * 1.05);
       await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff()).send({}).expect(200);
       await ctx.api().patch(`${V1}/rooms/${rooms[room]}/status`).set(staff()).send({ status: 'VACANT' }).expect(200);
     }
@@ -110,7 +110,7 @@ describe('Pricing by guest count', () => {
     const res = await ctx.api().patch(`${V1}/stays/${stay.id}`).set(staff()).send({ guests: 3, businessDate: ctx.today }).expect(200);
     expect(res.body.data.stay).toMatchObject({ guests: 3, rate: 1800, nights: 3 });
     expect(res.body.data.stay.roomCharges.map((c: any) => [c.guests, c.rate, c.nights, c.amount])).toEqual([[1, 1000, 1, 1000], [3, 1800, 2, 3600]]);
-    expect(await tariffTotal(stay.id)).toBeCloseTo((1000 + 3600) * 1.12);
+    expect(await tariffTotal(stay.id)).toBeCloseTo((1000 + 3600) * 1.05);
     expect(await ctx.model('AuditLog').countDocuments({ stayId: stay.id, action: 'GUEST_COUNT_CHANGE' })).toBe(1);
 
     // Checkout total after a guest-count change: room charges + food − payments.
@@ -118,8 +118,8 @@ describe('Pricing by guest count', () => {
       .send({ payment: { kind: 'ADVANCE', amount: '1000.00', mode: 'CASH', businessDate: ctx.today, time: '10:00' } })
       .expect(200);
     const out = (await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff()).send({}).expect(200)).body.data;
-    expect(out.bill).toEqual({ roomCharges: '5152.00', food: '0.00', otherCharges: '0.00', payments: '1000.00', total: '4152.00' });
-    expect(out.folioBalance).toBe('4152.00');
+    expect(out.bill).toEqual({ roomCharges: '4830.00', food: '0.00', otherCharges: '0.00', payments: '1000.00', total: '3830.00' });
+    expect(out.folioBalance).toBe('3830.00');
   });
 
   it('a room price edit does not touch a stay in progress', async () => {
@@ -130,7 +130,7 @@ describe('Pricing by guest count', () => {
     expect(room).toMatchObject({ singleRate: 750, doubleRate: 950, rate: 750 });
     expect(room.currentStay).toMatchObject({ rate: 900, guests: 2 });
     expect(room.currentStay.roomCharges[0]).toMatchObject({ rate: 900, amount: 1800 });
-    expect(await tariffTotal(stay.id)).toBeCloseTo(1800 * 1.12);
+    expect(await tariffTotal(stay.id)).toBeCloseTo(1800 * 1.05);
     await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff()).send({}).expect(200);
   });
 });
@@ -145,7 +145,6 @@ describe('Room shift', () => {
   it('needs a ROOM_SHIFT request of this stay, still open', async () => {
     const a = await checkIn('401', '9600000001', 1, -1, 3);
     const b = await checkIn('402', '9600000002', 1, -1, 3);
-    await shift(a.id, { toRoomId: rooms['403'], guests: 1 }).expect(400); // requestId missing
     const tokenA = await guestToken('401', '9600000001');
     const otherKind = (await ctx.api().post(`${V1}/guest/service-requests`).set(bearer(tokenA)).send({ key: 'laundry' }).expect(201)).body.data.id;
     expect((await shift(a.id, { requestId: otherKind, toRoomId: rooms['403'], guests: 1 }).expect(400)).body.code).toBe('INVALID_SHIFT_REQUEST');
@@ -157,6 +156,25 @@ describe('Room shift', () => {
     for (const r of ['401', '402']) await ctx.api().patch(`${V1}/rooms/${rooms[r]}/status`).set(staff()).send({ status: 'VACANT' }).expect(200);
     // Checking out lapsed b's open shift request.
     expect(((await ctx.model('ServiceRequest').findById(bRequest).lean()) as any).status).toBe('EXPIRED');
+  });
+
+  it('without requestId it is a manager shift: works repeatedly and touches no request', async () => {
+    const stay = await checkIn('401', '9600000020', 1, -1, 3); // 1000
+    const open = await shiftRequest('401', '9600000020');
+    await shift(stay.id, { toRoomId: rooms['403'], guests: 1, source: 'MANAGER' }).expect(400); // unknown key
+    const first = (await shift(stay.id, { toRoomId: rooms['403'], guests: 1, rate: '9.00', reason: 'AC not working' }).expect(200)).body.data;
+    expect(first).toMatchObject({ roomId: rooms['403'], rate: 2000 });
+    expect(first.shifts[0]).toMatchObject({ kind: 'UPGRADE', adjustment: 2000, reason: 'AC not working' });
+    const second = (await shift(stay.id, { toRoomId: rooms['405'], guests: 1 }).expect(200)).body.data;
+    expect(second.shifts).toHaveLength(2);
+    expect(await ctx.model('RoomShift').countDocuments({ stayId: stay.id, requestId: null })).toBe(2);
+    expect(((await ctx.model('ServiceRequest').findById(open).lean()) as any).status).toBe('SENT');
+    // The guest's own request can still be answered with its requestId.
+    const third = (await shift(stay.id, { requestId: open, toRoomId: rooms['406'], guests: 1 }).expect(200)).body.data;
+    expect(third.shifts).toHaveLength(3);
+    expect(((await ctx.model('ServiceRequest').findById(open).lean()) as any).status).toBe('DONE');
+    expect(await ctx.model('AuditLog').countDocuments({ stayId: stay.id, action: 'ROOM_SHIFT', 'details.managerInitiated': true })).toBe(2);
+    await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff()).send({}).expect(200);
   });
 
   it('only one open shift request per stay', async () => {
@@ -179,7 +197,7 @@ describe('Room shift', () => {
     expect(after.shifts).toEqual([expect.objectContaining({
       fromRoomNumber: '401', toRoomNumber: '403', fromRate: 1500, toRate: 2500, kind: 'UPGRADE', date: ctx.today, nightsBefore: 1, adjustment: 2000,
     })]);
-    expect(await tariffTotal(stay.id)).toBeCloseTo((1500 + 5000) * 1.12); // (4500 + 2000) × 1.12
+    expect(await tariffTotal(stay.id)).toBeCloseTo((1500 + 5000) * 1.05); // (4500 + 2000) × 1.05
     expect([await roomStatus('401'), await roomStatus('403')]).toEqual(['DIRTY', 'OCCUPIED']);
     const request = (await ctx.model('ServiceRequest').findById(requestId).lean()) as any;
     expect(request).toMatchObject({ status: 'DONE', remark: 'Guest asked for Deluxe' });
@@ -199,7 +217,7 @@ describe('Room shift', () => {
     // Checkout total after a shift: room charges + food − payments, and no cash entry from the shift.
     expect(await ctx.model('DayRegisterEntry').countDocuments({ stayId: stay.id })).toBe(0);
     const out = (await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff()).send({}).expect(200)).body.data;
-    expect(out.bill).toEqual({ roomCharges: '7280.00', food: '21.00', otherCharges: '0.00', payments: '0.00', total: '7301.00' });
+    expect(out.bill).toEqual({ roomCharges: '6825.00', food: '21.00', otherCharges: '0.00', payments: '0.00', total: '6846.00' });
     expect(await roomStatus('403')).toBe('DIRTY');
     for (const r of ['401', '403']) await ctx.api().patch(`${V1}/rooms/${rooms[r]}/status`).set(staff()).send({ status: 'VACANT' }).expect(200);
   });
@@ -209,7 +227,7 @@ describe('Room shift', () => {
     const requestId = await shiftRequest('406', '9600000005');
     const after = (await shift(stay.id, { requestId, toRoomId: rooms['404'], guests: 2 }).expect(200)).body.data; // 950 now
     expect(after.shifts[0]).toMatchObject({ kind: 'DOWNGRADE', fromRate: 3600, toRate: 950, nightsBefore: 1, adjustment: -5300 });
-    expect(await tariffTotal(stay.id)).toBeCloseTo((3600 + 1900) * 1.12);
+    expect(await tariffTotal(stay.id)).toBeCloseTo((3600 + 1900) * 1.05);
     await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff()).send({}).expect(200);
   });
 
@@ -218,7 +236,7 @@ describe('Room shift', () => {
     const requestId = await shiftRequest('407', '9600000006', 'Noisy room');
     const after = (await shift(stay.id, { requestId, toRoomId: rooms['403'], guests: 1 }).expect(200)).body.data;
     expect(after.shifts[0]).toMatchObject({ kind: 'SAME', adjustment: 0 });
-    expect(await tariffTotal(stay.id)).toBeCloseTo(6000 * 1.12);
+    expect(await tariffTotal(stay.id)).toBeCloseTo(6000 * 1.05);
     await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff()).send({}).expect(200);
   });
 

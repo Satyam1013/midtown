@@ -5,6 +5,7 @@ import { dec, toD128 } from '../common/utils/money';
 import { FolioLine, FolioSource } from '../folio/schemas/folio-line.schema';
 import { Room } from '../rooms/schemas/room.schema';
 import { RoomShift } from './schemas/room-shift.schema';
+import { StayGuest } from './schemas/stay-guest.schema';
 
 /**
  * The stay as the apps read it: roomCharges[] with amounts and shifts[] with
@@ -17,14 +18,16 @@ export class StayViewService {
     @InjectModel(Room.name) private readonly rooms: Model<Room>,
     @InjectModel(RoomShift.name) private readonly shifts: Model<RoomShift>,
     @InjectModel(FolioLine.name) private readonly folio: Model<FolioLine>,
+    @InjectModel(StayGuest.name) private readonly stayGuests: Model<StayGuest>,
   ) {}
 
   async decorate<T extends Record<string, any>>(stays: T[]) {
     if (!stays.length) return [];
     const ids = stays.map((s) => s._id as Types.ObjectId);
-    const [shifts, tariffLines] = await Promise.all([
+    const [shifts, tariffLines, added] = await Promise.all([
       this.shifts.find({ stayId: { $in: ids } }).sort({ createdAt: 1 }).lean(),
       this.folio.find({ stayId: { $in: ids }, source: FolioSource.TARIFF }).lean(),
+      this.stayGuests.find({ stayId: { $in: ids } }).sort({ addedAt: 1 }).lean(),
     ]);
     const roomIds = new Set<string>();
     stays.forEach((s) => roomIds.add(String(s.roomId)));
@@ -59,11 +62,28 @@ export class StayViewService {
           guests: seg.guests,
           rate: seg.rate,
           nights: seg.nights,
+          gstPct: seg.gstPct ?? (stay.gst ? null : 12),
           // rate × nights, before GST.
           amount: toD128(dec(seg.rate).times(seg.nights)),
           // What the folio line charges for this segment: amount + 12% GST.
           billed: seg.folioLineId ? (lineOf.get(String(seg.folioLineId))?.amount ?? null) : null,
         })),
+        customerId: stay.customerId ?? null,
+        guestList: added
+          .filter((g) => String(g.stayId) === String(stay._id))
+          .map((g) => ({
+            id: g._id,
+            name: g.name,
+            phone: g.phone,
+            customerId: g.customerId,
+            addedAt: g.addedAt,
+            date: g.businessDate,
+            guestsAfter: g.guestsAfter,
+            fromRate: g.fromRate,
+            toRate: g.toRate,
+            nightsLeft: g.nightsLeft,
+            adjustment: g.adjustment,
+          })),
         shifts: shifts
           .filter((s) => String(s.stayId) === String(stay._id))
           .map((s) => ({

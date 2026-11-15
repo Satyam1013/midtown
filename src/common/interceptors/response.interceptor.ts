@@ -8,7 +8,7 @@ import { HOIST_DATA } from '../decorators';
 export class Paged<T> {
   constructor(
     readonly items: T[],
-    readonly meta: { page: number; limit: number; total: number },
+    readonly meta: { page?: number; limit: number; total?: number; nextCursor?: string | null },
   ) {}
 }
 

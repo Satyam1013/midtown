@@ -10,11 +10,12 @@ import { serialize } from '../common/interceptors/response.interceptor';
 import { DayRegisterEntry } from '../entries/schemas/day-register-entry.schema';
 import { Expense } from '../expenses/schemas/expense.schema';
 import { OnlineOrder } from '../online-orders/schemas/online-order.schema';
+import { BillPrint } from '../stays/schemas/bill-print.schema';
 import { Room } from '../rooms/schemas/room.schema';
 import { Staff } from '../staff/schemas/staff.schema';
 import { StockItem } from '../stock/schemas/stock-item.schema';
 
-export const REPORT_KEYS = ['daily', 'cash', 'rooms', 'bookings', 'expenses', 'stock', 'staff', 'online'] as const;
+export const REPORT_KEYS = ['daily', 'cash', 'rooms', 'bookings', 'expenses', 'stock', 'staff', 'online', 'manual-bills'] as const;
 export type ReportKey = (typeof REPORT_KEYS)[number];
 
 export interface Report {
@@ -39,6 +40,7 @@ export class ReportsService {
     @InjectModel(Staff.name) private readonly staff: Model<Staff>,
     @InjectModel(Attendance.name) private readonly attendance: Model<Attendance>,
     @InjectModel(OnlineOrder.name) private readonly online: Model<OnlineOrder>,
+    @InjectModel(BillPrint.name) private readonly prints: Model<BillPrint>,
   ) {}
 
   async build(key: string, date: string): Promise<Report> {
@@ -89,6 +91,31 @@ export class ReportsService {
           { $lookup: { from: 'attendance', let: { staff: '$_id' }, pipeline: [{ $match: { $expr: { $eq: ['$staffId', '$$staff'] }, businessDate: date, deletedAt: null } }], as: 'mark' } },
           { $set: { mark: { $first: '$mark.mark' } } },
           { $project: { row: ['$name', '$role', '$shift', num('$salary'), { $switch: { branches: [{ case: { $eq: ['$mark', 'P'] }, then: 'Present' }, { case: { $eq: ['$mark', 'A'] }, then: 'Absent' }, { case: { $eq: ['$mark', 'L'] }, then: 'Leave' }], default: '' } }] } },
+        ]));
+      case 'manual-bills':
+        // Manual (presentation) bills printed that business day, against the real bill.
+        return this.table('Manual bills printed', date, ['Time', 'User', 'Room', 'Guest', 'Bill no', 'Printed', 'Actual total', 'Manual total', 'Difference'], await this.prints.aggregate([
+          { $match: { businessDate: date, type: 'MANUAL' } },
+          { $sort: { createdAt: 1 } },
+          { $lookup: { from: 'users', localField: 'userId', foreignField: '_id', as: 'user' } },
+          { $lookup: { from: 'stays', localField: 'stayId', foreignField: '_id', as: 'stay' } },
+          { $set: { stay: { $first: '$stay' } } },
+          { $lookup: { from: 'rooms', localField: 'stay.roomId', foreignField: '_id', as: 'room' } },
+          {
+            $project: {
+              row: [
+                { $dateToString: { date: '$createdAt', format: '%H:%M', timezone: 'Asia/Kolkata' } },
+                { $ifNull: [{ $first: '$user.name' }, ''] },
+                { $ifNull: [{ $first: '$room.number' }, ''] },
+                { $ifNull: ['$stay.guestName', ''] },
+                { $ifNull: ['$billNo', ''] },
+                '$which',
+                { $toDouble: '$serverAmounts.total' },
+                { $toDouble: '$amounts.total' },
+                { $subtract: [{ $toDouble: '$amounts.total' }, { $toDouble: '$serverAmounts.total' }] },
+              ],
+            },
+          },
         ]));
       case 'online':
         return this.table('Online food orders', date, ['Platform', 'Order ID', 'Time', 'Items', 'Order value', 'Net payout', 'Status'], await this.online.aggregate([

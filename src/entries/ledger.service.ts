@@ -25,6 +25,8 @@ export interface PostInput {
   source: EntrySource;
   /** Checkout only: balance left unpaid. */
   shortfall?: string | null;
+  /** False for lines that may legitimately repeat (split checkout rows). */
+  dupCheck?: boolean;
   /** When set, the entry also posts one folio line to stayId. */
   folio?: { head: string; source: FolioSource };
 }
@@ -62,6 +64,7 @@ export class LedgerService {
           guestName: (input.guestName ?? '').trim(),
           amount: toD128(amount),
           shortfall: shortfall ? toD128(shortfall) : null,
+          dupCheck: input.dupCheck ?? true,
         },
       ],
       { session },
@@ -127,6 +130,7 @@ export class LedgerService {
         type: key.type,
         amount: toD128(key.amount),
         guestName,
+        dupCheck: { $ne: false },
         ...(excludeId ? { _id: { $ne: excludeId } } : {}),
       })
       .collation(COLLATION)

@@ -189,14 +189,14 @@ describe('Business day (shift)', () => {
   });
 
   it('checkout records the unpaid part as a shortfall and keeps it on the folio', async () => {
-    const stay = await checkIn(ctx, '303', 'Short Payer', '9811000002'); // Suite 5200 × 2 + 12%
+    const stay = await checkIn(ctx, '303', 'Short Payer', '9811000002'); // Suite 5200 × 2 + 5% (rooms ≤ 7500/night)
     const out = (await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff())
       .send({ payment: { amount: '10000.00', mode: 'CASH', time: '12:00' } }).expect(200)).body.data;
-    expect(out.shortfall).toBe(1648); // 11648 − 10000
-    expect(out.folioBalance).toBe('1648.00');
-    expect(out.entry).toMatchObject({ amount: 10000, shortfall: 1648, source: 'CHECKOUT' });
+    expect(out.shortfall).toBe(920); // 10920 − 10000
+    expect(out.folioBalance).toBe('920.00');
+    expect(out.entry).toMatchObject({ amount: 10000, shortfall: 920, source: 'CHECKOUT' });
     const report = (await ctx.api().get(`${V1}/daybook/shortages`).query({ from: ctx.today, to: ctx.today }).set(mgr()).expect(200)).body.data;
-    expect(report.entries).toEqual([expect.objectContaining({ guestName: 'Short Payer', roomNumber: '303', shortfall: 1648 })]);
+    expect(report.entries).toEqual([expect.objectContaining({ guestName: 'Short Payer', roomNumber: '303', shortfall: 920 })]);
   });
 
   it('lines from other modules are not editable through /entries', async () => {
@@ -214,7 +214,8 @@ describe('Business day (shift)', () => {
     expect(await ctx.model('FolioLine').countDocuments({ stayId: stay.id, source: 'OTHER' })).toBe(1);
     const taxi = await ctx.model('ServiceRequest').create({ stayId: stay.id, key: 'taxi', label: 'Book a taxi' });
     await ctx.api().post(`${V1}/service-requests/${taxi._id}/charge`).set(staff()).send({ amount: '300.00', billTo: 'PAY_NOW', mode: 'CASH', time: '15:00' }).expect(200);
-    expect((await register(ctx.today)).filter((l: any) => l.source === 'REQUEST')).toEqual([expect.objectContaining({ amount: 300, type: 'Book a taxi' })]);
+    // 300 + 18% GST on services.
+    expect((await register(ctx.today)).filter((l: any) => l.source === 'REQUEST')).toEqual([expect.objectContaining({ amount: 354, type: 'Book a taxi' })]);
   });
 
   it('opening balance edits only while open, and are audited', async () => {
@@ -599,16 +600,16 @@ describe('API contract with the front-ends', () => {
     expect(room.deletedAt).toBeUndefined();
   });
 
-  it('check-in posts tariff + 12% GST to the folio; changing dates rewrites that line', async () => {
+  it('check-in posts tariff + slab GST (5% up to 7500/night) to the folio; changing dates rewrites that line', async () => {
     const stay = await checkIn(ctx, '205', 'Tariff Guest', '9700000005'); // Standard, 1800 × 2
     const lines = () => ctx.model('FolioLine').find({ stayId: stay.id, source: 'TARIFF' }).lean();
-    expect((await lines())[0].amount.toString()).toBe('4032.00');
+    expect((await lines())[0].amount.toString()).toBe('3780.00');
     const later = new Date(`${stay.checkIn}T00:00:00Z`);
     later.setUTCDate(later.getUTCDate() + 3);
     await ctx.api().patch(`${V1}/stays/${stay.id}`).set(staff()).send({ checkOut: later.toISOString().slice(0, 10) }).expect(200);
     const after = await lines();
     expect(after).toHaveLength(1);
-    expect(after[0].amount.toString()).toBe('6048.00');
+    expect(after[0].amount.toString()).toBe('5670.00');
   });
 
   it('settling a table bill posts once and only from KOT totals', async () => {

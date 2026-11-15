@@ -10,6 +10,7 @@ import { badRequest, conflict, notFound } from '../common/errors';
 import { Principal, userObjectId } from '../common/interfaces/principal';
 import { oidOrNull } from '../common/pipes/parse-object-id.pipe';
 import { BusinessDateService } from '../common/services/business-date.service';
+import { GstService, StayGstMode } from '../common/services/gst.service';
 import { TaxService } from '../common/services/tax.service';
 import { dec, toD128 } from '../common/utils/money';
 import { normalizePhone } from '../common/utils/phone';
@@ -28,10 +29,15 @@ import {
   ServiceRequestKey,
   ServiceRequestStatus,
 } from '../service-requests/schemas/service-request.schema';
-import { CheckInDto, CheckOutDto, ShiftRoomDto, StayPaymentDto, StayPaymentKind, UpdateStayDto } from './dto/stay.dto';
+import { AddGuestDto, CheckInDto, CheckOutDto, ShiftRoomDto, StayPaymentDto, StayPaymentKind, UpdateStayDto } from './dto/stay.dto';
 import { RoomShift, ShiftKind } from './schemas/room-shift.schema';
+import { StayGuest } from './schemas/stay-guest.schema';
+import { CustomersService } from '../customers/customers.service';
+import { MAX_GUESTS } from '../config/pricing';
 import { Stay, StayDocument, StayStatus } from './schemas/stay.schema';
 import { StayViewService } from './stay-view.service';
+import { StayBillService } from './stay-bill.service';
+import { CounterService } from '../database/counter.service';
 
 const PAYMENT_TYPE: Record<StayPaymentKind, string> = {
   [StayPaymentKind.ADVANCE]: 'Advance',
@@ -48,7 +54,10 @@ interface Segment {
   rate: Types.Decimal128;
   nights: number;
   folioLineId: Types.ObjectId | null;
+  gstPct?: number | null;
 }
+
+type StayGstRef = { _id: Types.ObjectId; gst?: StayGstMode | null };
 
 @Injectable()
 export class StaysService {
@@ -68,6 +77,11 @@ export class StaysService {
     private readonly dates: BusinessDateService,
     private readonly tax: TaxService,
     private readonly events: EventsService,
+    @InjectModel(StayGuest.name) private readonly stayGuests: Model<StayGuest>,
+    private readonly customers: CustomersService,
+    private readonly gst: GstService,
+    private readonly counters: CounterService,
+    private readonly bills: StayBillService,
   ) {}
 
   async checkIn(dto: CheckInDto, user: Principal) {
@@ -89,6 +103,7 @@ export class StaysService {
       }
       // Any rate the app sent is ignored; the room and guest count decide it.
       const rate = toD128(nightlyRate(room, guests));
+      const customer = await this.customers.forVisit({ customerId: dto.customerId, name: dto.guestName, phone: dto.phone }, session);
 
       const [stay] = await this.stays.create(
         [
@@ -103,12 +118,14 @@ export class StaysService {
             rate,
             guests,
             bookingId: oidOrNull(dto.bookingId),
+            customerId: customer._id,
+            gst: this.gst.newStayMode(),
           },
         ],
         { session },
       );
       const segment = await this.writeSegmentLine(
-        stay._id,
+        stay,
         { label: `Room ${room.number}`, roomId: room._id, roomNumber: room.number, guests, rate, nights, folioLineId: null },
         session,
       );
@@ -147,9 +164,9 @@ export class StaysService {
         this.events.toHotelAndStay('stay.updated', stay._id, { stayId: String(stay._id) });
         if (advance) this.events.toHotel('entry.created', { id: String(advance._id), businessDate: advance.businessDate });
       });
-      return stay._id;
+      return { stayId: stay._id, customerId: customer._id };
     });
-    return { stay: await this.present(stayId) };
+    return { stay: await this.present(stayId.stayId), customer: { id: stayId.customerId } };
   }
 
   /** Edit a stay, with at most one advance, part payment or refund, and an optional guest-count change. */
@@ -176,7 +193,7 @@ export class StaysService {
           const newRate = toD128(nightlyRate(room!, dto.guests));
           const nightsBefore = this.nightsUpTo(stay, effective);
           const before = { guests: stay.guests ?? 1, rate: stay.rate };
-          await this.splitTail(stay._id, segments, nightsBefore, { ...this.last(segments), guests: dto.guests, rate: newRate }, session);
+          await this.splitTail(stay, segments, nightsBefore, { ...this.last(segments), guests: dto.guests, rate: newRate }, session);
           stay.guests = dto.guests;
           stay.rate = newRate;
           await this.audit.record(
@@ -196,7 +213,7 @@ export class StaysService {
             throw badRequest('INVALID_STAY_DATES', 'Check-out is before the nights already moved to another room or rate');
           }
           tail.nights = tailNights;
-          await this.writeSegmentLine(stay._id, tail, session);
+          await this.writeSegmentLine(stay, tail, session);
           stay.checkOut = checkOut;
           stay.nights = nights;
         }
@@ -231,19 +248,98 @@ export class StaysService {
     return { stay: await this.present(stayId), entry };
   }
 
+  /**
+   * Adds a guest to an in-house stay. The rate for the new total applies from
+   * `businessDate` on: the current segment ends there and a new one starts,
+   * so the folio changes by (new − old rate) × nights left, plus GST.
+   * No cash entry is made.
+   */
+  async addGuest(id: Types.ObjectId, dto: AddGuestDto, user: Principal) {
+    const date = dto.businessDate ?? (await this.daybook.openDate()) ?? this.dates.today();
+    const result = await this.tx.run(async ({ session, afterCommit }) => {
+      const stay = await this.stays.findOne({ _id: id, status: StayStatus.IN_HOUSE }).session(session);
+      if (!stay) {
+        if (!(await this.stays.exists({ _id: id }).session(session))) throw notFound('Stay');
+        throw conflict('STAY_NOT_IN_HOUSE', 'This stay has already checked out');
+      }
+      const current = stay.guests ?? 1;
+      if (current >= MAX_GUESTS || dto.guests > MAX_GUESTS) {
+        throw conflict('GUEST_LIMIT', `A room takes at most ${MAX_GUESTS} guests`);
+      }
+      if (dto.guests <= current) {
+        throw badRequest('INVALID_GUEST_COUNT', `guests is the new total and must be more than ${current}`);
+      }
+      const stayed = this.dates.daysBetween(stay.checkIn, date);
+      if (stayed < 0 || date > stay.checkOut) throw badRequest('INVALID_DATE', 'The date must fall within the stay');
+      const nightsLeft = stay.nights - stayed;
+
+      const room = await this.rooms.findById(stay.roomId).session(session);
+      const segments = await this.segmentsOf(stay, session);
+      const oldRate = this.last(segments).rate;
+      const newRate = toD128(nightlyRate(room!, dto.guests));
+      const adjustment = dec(newRate).minus(dec(oldRate)).times(nightsLeft);
+      if (nightsLeft > 0) {
+        await this.splitTail(stay, segments, stayed, { ...this.last(segments), guests: dto.guests, rate: newRate }, session);
+      }
+      stay.guests = dto.guests;
+      stay.rate = newRate;
+      stay.roomCharges = segments as any;
+      await stay.save({ session });
+
+      const customer = dto.phone?.trim()
+        ? await this.customers.forVisit({ name: dto.name, phone: dto.phone }, session)
+        : null;
+      const [guest] = await this.stayGuests.create(
+        [
+          {
+            stayId: stay._id,
+            name: dto.name?.trim() ?? '',
+            phone: normalizePhone(dto.phone),
+            customerId: customer?._id ?? null,
+            addedAt: new Date(),
+            businessDate: date,
+            guestsAfter: dto.guests,
+            fromRate: oldRate,
+            toRate: newRate,
+            nightsLeft,
+            adjustment: toD128(adjustment),
+            addedByUserId: userObjectId(user),
+          },
+        ],
+        { session },
+      );
+      await this.audit.record(
+        AuditAction.GUEST_ADDED,
+        stay._id,
+        userObjectId(user),
+        { guestId: guest._id, customerId: customer?._id ?? null, from: { guests: current, rate: oldRate }, to: { guests: dto.guests, rate: newRate }, date, time: dto.time ?? null, nightsLeft, adjustment: toD128(adjustment) },
+        session,
+      );
+      afterCommit(() => {
+        this.events.toHotelAndStay('stay.updated', stay._id, { stayId: String(stay._id) });
+        this.events.toHotelAndStay('folio.updated', stay._id, { stayId: String(stay._id) });
+      });
+      return { stayId: stay._id, guest: { id: guest._id, customerId: customer?._id ?? null }, adjustment };
+    });
+    return { stay: await this.present(result.stayId), guest: result.guest, adjustment: toD128(result.adjustment) };
+  }
+
   /** Move an in-house guest to another room, answering their ROOM_SHIFT request. */
   async shift(id: Types.ObjectId, dto: ShiftRoomDto, user: Principal) {
     this.dates.assertAllowed(dto.businessDate, user);
     const stayId = await this.tx.run(async ({ session, afterCommit }) => {
-      const request = await this.requests.findById(dto.requestId).session(session);
-      if (!request || request.key !== ServiceRequestKey.ROOM_SHIFT) {
-        throw badRequest('INVALID_SHIFT_REQUEST', 'A room shift needs the guest’s room shift request');
-      }
-      if (String(request.stayId) !== String(id)) {
-        throw badRequest('INVALID_SHIFT_REQUEST', 'That request belongs to another stay');
-      }
-      if (CLOSED_REQUEST_STATUSES.includes(request.status)) {
-        throw conflict('SHIFT_REQUEST_CLOSED', `This request is already ${request.status}`);
+      // With a requestId the shift answers the guest's request; without one the manager started it.
+      const request = dto.requestId ? await this.requests.findById(dto.requestId).session(session) : null;
+      if (dto.requestId) {
+        if (!request || request.key !== ServiceRequestKey.ROOM_SHIFT) {
+          throw badRequest('INVALID_SHIFT_REQUEST', 'requestId is not a room shift request');
+        }
+        if (String(request.stayId) !== String(id)) {
+          throw badRequest('INVALID_SHIFT_REQUEST', 'That request belongs to another stay');
+        }
+        if (CLOSED_REQUEST_STATUSES.includes(request.status)) {
+          throw conflict('SHIFT_REQUEST_CLOSED', `This request is already ${request.status}`);
+        }
       }
 
       const stay = await this.stays.findOne({ _id: id, status: StayStatus.IN_HOUSE }).session(session);
@@ -275,7 +371,7 @@ export class StaysService {
       const kind = diff.gt(0) ? ShiftKind.UPGRADE : diff.lt(0) ? ShiftKind.DOWNGRADE : ShiftKind.SAME;
 
       await this.splitTail(
-        stay._id,
+        stay,
         segments,
         nightsBefore,
         { label: `Room ${target.number}`, roomId: target._id, roomNumber: target.number, guests: dto.guests, rate: newRate, nights: 0, folioLineId: null },
@@ -292,7 +388,7 @@ export class StaysService {
         [
           {
             stayId: stay._id,
-            requestId: request._id,
+            requestId: request?._id ?? null,
             fromRoomId: before.roomId,
             toRoomId: target._id,
             fromRate: oldRate,
@@ -303,21 +399,23 @@ export class StaysService {
             nightsBefore,
             nightsLeft,
             adjustment,
-            reason: dto.reason ?? request.note ?? '',
+            reason: dto.reason ?? request?.note ?? '',
             createdByUserId: userObjectId(user),
           },
         ],
         { session },
       );
-      request.status = ServiceRequestStatus.DONE;
-      request.handledByUserId = userObjectId(user);
-      request.remark = dto.reason ?? `Moved to room ${target.number}`;
-      await request.save({ session });
+      if (request) {
+        request.status = ServiceRequestStatus.DONE;
+        request.handledByUserId = userObjectId(user);
+        request.remark = dto.reason ?? `Moved to room ${target.number}`;
+        await request.save({ session });
+      }
       await this.audit.record(
         AuditAction.ROOM_SHIFT,
         stay._id,
         userObjectId(user),
-        { shiftId: record._id, from: before, to: { roomId: target._id, guests: dto.guests, rate: newRate }, nightsBefore, nightsLeft, adjustment, kind },
+        { shiftId: record._id, requestId: request?._id ?? null, managerInitiated: !request, from: before, to: { roomId: target._id, guests: dto.guests, rate: newRate }, nightsBefore, nightsLeft, adjustment, kind },
         session,
       );
 
@@ -326,11 +424,13 @@ export class StaysService {
         this.events.toHotel('room.status.changed', { roomId: String(target._id), status: RoomStatus.OCCUPIED });
         this.events.toHotelAndStay('stay.updated', stay._id, { stayId: String(stay._id) });
         this.events.toHotelAndStay('folio.updated', stay._id, { stayId: String(stay._id) });
-        this.events.toHotelAndStay('service-request.updated', stay._id, {
-          id: String(request._id),
-          key: request.key,
-          status: request.status,
-        });
+        if (request) {
+          this.events.toHotelAndStay('service-request.updated', stay._id, {
+            id: String(request._id),
+            key: request.key,
+            status: request.status,
+          });
+        }
       });
       return stay._id;
     });
@@ -343,6 +443,7 @@ export class StaysService {
    * line's shortfall and stays on the folio; nothing is written off.
    */
   async checkOut(id: Types.ObjectId, dto: CheckOutDto, user: Principal) {
+    if (dto.payment && dto.payments) throw badRequest('PAYMENT_CONFLICT', 'Send payment or payments, not both');
     const result = await this.tx.run(async ({ session, afterCommit }) => {
       const businessDate = await this.daybook.requireOpenDay(session);
       const stay = await this.stays.findOneAndUpdate(
@@ -362,50 +463,97 @@ export class StaysService {
         { session },
       );
 
+      const [charges] = await this.folioLines.aggregate<{ total: Types.Decimal128 }>([
+        { $match: { stayId: stay._id, deletedAt: null, source: { $nin: [FolioSource.PAYMENT, FolioSource.REFUND] } } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]).session(session);
+      await this.customers.addSpent(stay.customerId, dec(charges?.total).toFixed(2), session);
       const owed = dec((await this.folio.balances([stay._id], session)).get(String(stay._id)));
-      const received = dec(dto.payment?.amount ?? '0');
+      // One row per payment. A split (`payments`) posts one Part payment line per row, so each
+      // mode lands in its own day-book total; the old single `payment` posts one Check-out line.
+      const split = !!dto.payments?.length;
+      const rows = split ? dto.payments! : dto.payment && dec(dto.payment.amount).gt(0) ? [dto.payment] : [];
+      const received = rows.reduce((t, r) => t.plus(dec(r.amount)), dec(0));
       const shortfall = Decimal.max(0, owed.minus(received));
-      let entry = null;
-      if (received.gt(0) || shortfall.gt(0)) {
-        entry = await this.ledger.post(
-          {
-            businessDate,
-            time: dto.payment?.time ?? this.dates.nowTime(),
-            roomId: stay.roomId,
-            stayId: stay._id,
-            guestName: stay.guestName,
-            phone: stay.phone,
-            vehicle: stay.vehicle,
-            type: 'Check-out',
-            mode: dto.payment?.mode ?? PaymentMode.CASH,
-            dc: DebitCredit.CREDIT,
-            amount: received.toFixed(2),
-            narration:
-              dto.payment?.narration ??
-              (shortfall.gt(0) ? `Settlement, room ${room?.number}: ${shortfall.toFixed(2)} unpaid` : `Settlement, room ${room?.number}`),
-            source: EntrySource.CHECKOUT,
-            shortfall: shortfall.gt(0) ? shortfall.toFixed(2) : null,
-            createdByUserId: userObjectId(user),
-            ...(received.gt(0) ? { folio: { head: 'Payment at check-out', source: FolioSource.PAYMENT } } : {}),
-          },
-          session,
+      const posted: Awaited<ReturnType<LedgerService['post']>>[] = [];
+      for (const [i, row] of rows.entries()) {
+        const last = i === rows.length - 1;
+        posted.push(
+          await this.ledger.post(
+            {
+              businessDate,
+              time: row.time,
+              roomId: stay.roomId,
+              stayId: stay._id,
+              guestName: stay.guestName,
+              phone: stay.phone,
+              vehicle: stay.vehicle,
+              type: split ? 'Part payment' : 'Check-out',
+              mode: row.mode,
+              dc: DebitCredit.CREDIT,
+              amount: dec(row.amount).toFixed(2),
+              narration:
+                row.narration ??
+                (last && shortfall.gt(0) ? `Settlement, room ${room?.number}: ${shortfall.toFixed(2)} unpaid` : `Settlement, room ${room?.number}`),
+              source: EntrySource.CHECKOUT,
+              shortfall: last && shortfall.gt(0) ? shortfall.toFixed(2) : null,
+              // Split rows may repeat a mode and amount on purpose.
+              dupCheck: !split,
+              createdByUserId: userObjectId(user),
+              folio: { head: split ? `Payment at check-out (${row.mode})` : 'Payment at check-out', source: FolioSource.PAYMENT },
+            },
+            session,
+          ),
         );
       }
+      if (!rows.length && shortfall.gt(0)) {
+        // Nothing collected: a zero line still records what the guest owes.
+        posted.push(
+          await this.ledger.post(
+            {
+              businessDate,
+              time: this.dates.nowTime(),
+              roomId: stay.roomId,
+              stayId: stay._id,
+              guestName: stay.guestName,
+              phone: stay.phone,
+              vehicle: stay.vehicle,
+              type: 'Check-out',
+              mode: PaymentMode.CASH,
+              dc: DebitCredit.CREDIT,
+              amount: '0.00',
+              narration: `Settlement, room ${room?.number}: ${shortfall.toFixed(2)} unpaid`,
+              source: EntrySource.CHECKOUT,
+              shortfall: shortfall.toFixed(2),
+              createdByUserId: userObjectId(user),
+            },
+            session,
+          ),
+        );
+      }
+      // The bill number is given once, here, and never reused: a per-financial-year counter.
+      const fy = this.gst.financialYear(businessDate);
+      stay.billNo = StayBillService.format(this.gst.settings.billPrefix, fy, await this.counters.next(`bill:${fy}`, session));
+      stay.billDate = businessDate;
+      await stay.save({ session });
+      const entry = posted[posted.length - 1] ?? null;
       afterCommit(() => {
         this.events.toHotel('room.status.changed', { roomId: String(stay.roomId), status: room?.status });
         this.events.toHotelAndStay('stay.updated', stay._id, { stayId: String(stay._id), status: stay.status });
-        if (entry) this.events.toHotel('entry.created', { id: String(entry._id), businessDate });
+        for (const e of posted) this.events.toHotel('entry.created', { id: String(e._id), businessDate });
         this.events.endStay(stay._id);
       });
-      return { stay, entry, shortfall };
+      return { stay, entry, entries: posted, shortfall };
     });
     const bill = await this.folio.summary(result.stay._id);
     return {
       stay: await this.present(result.stay._id),
       entry: result.entry,
+      entries: result.entries,
       shortfall: toD128(result.shortfall),
       folioBalance: bill.balance,
       bill: bill.breakdown,
+      finalBill: await this.bills.build(result.stay._id),
     };
   }
 
@@ -494,7 +642,7 @@ export class StaysService {
    * Ends the current segment after `nightsBefore` nights of the whole stay and
    * starts `next` for the rest. Earlier nights keep their room and rate.
    */
-  private async splitTail(stayId: Types.ObjectId, segments: Segment[], nightsBefore: number, next: Segment, session: ClientSession) {
+  private async splitTail(stay: StayGstRef, segments: Segment[], nightsBefore: number, next: Segment, session: ClientSession) {
     const tail = this.last(segments);
     const tailStart = segments.slice(0, -1).reduce((n, s) => n + s.nights, 0);
     const kept = nightsBefore - tailStart;
@@ -509,22 +657,35 @@ export class StaysService {
       segments.pop();
     } else {
       tail.nights = kept;
-      await this.writeSegmentLine(stayId, tail, session);
+      await this.writeSegmentLine(stay, tail, session);
     }
-    segments.push(await this.writeSegmentLine(stayId, opened, session));
+    segments.push(await this.writeSegmentLine(stay, opened, session));
   }
 
-  /** Creates or rewrites the segment's TARIFF folio line: rate × nights + 12% GST. */
-  private async writeSegmentLine(stayId: Types.ObjectId, seg: Segment, session: ClientSession): Promise<Segment> {
+  /**
+   * Creates or rewrites the segment's TARIFF folio line with its GST breakup.
+   * The stay's own GST mode applies, so settings changed later don't touch it;
+   * older stays (no mode) keep 12% on top.
+   */
+  private async writeSegmentLine(stay: StayGstRef, seg: Segment, session: ClientSession): Promise<Segment> {
+    const base = dec(seg.rate).times(seg.nights);
+    const pct = this.gst.roomPct(seg.rate, stay.gst);
+    const b = stay.gst ? this.gst.charge(base, pct, stay.gst.inclusive) : this.tax.room(base);
+    const nights = `${seg.nights} night${seg.nights === 1 ? '' : 's'}`;
     const line = {
-      head: `${seg.label} (${seg.guests} guest${seg.guests === 1 ? '' : 's'}): ${seg.nights} night${seg.nights === 1 ? '' : 's'} + 12% GST`,
-      amount: toD128(this.tax.room(dec(seg.rate).times(seg.nights)).total),
+      head: `${seg.label} (${seg.guests} guest${seg.guests === 1 ? '' : 's'}): ${nights} ${stay.gst?.inclusive ? `incl. ${pct}% GST` : `+ ${pct}% GST`}`,
+      amount: toD128(b.total),
+      gstPct: pct,
+      taxable: toD128(b.taxable),
+      cgst: toD128(b.cgst),
+      sgst: toD128(b.sgst),
     };
+    seg.gstPct = pct;
     if (seg.folioLineId) {
       await this.folioLines.updateOne({ _id: seg.folioLineId }, { $set: line }, { session });
       return seg;
     }
-    const [created] = await this.folioLines.create([{ stayId, source: FolioSource.TARIFF, ...line }], { session });
+    const [created] = await this.folioLines.create([{ stayId: stay._id, source: FolioSource.TARIFF, ...line }], { session });
     seg.folioLineId = created._id;
     return seg;
   }

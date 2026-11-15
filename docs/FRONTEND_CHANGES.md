@@ -129,6 +129,75 @@ All additive: existing calls keep working.
 - `GET /expenses/summary?date=` returns `{ total, count, byHead[] }`.
 - `GET /daybook/shortages?from=&to=` returns `{ days[], entries[] }` (OWNER, MANAGER).
 
+## Customers, ID documents, adding a guest (manager app)
+
+**Check-in**
+- Look the phone up first with `GET /customers/lookup?phone=`. It returns `{ customer: { id, name, phone, visits, hasDocument, documentType } }`, or `{ customer: null }` for a new phone.
+- `POST /stays` takes an optional `customerId`. Without it, the server matches by phone or creates a customer.
+- The response adds `customer: { id }`, and `stay.customerId`.
+- Upload the ID afterwards with `POST /customers/:id/documents`, as `multipart/form-data` with fields `type` (`AADHAAR`, `DRIVING_LICENCE`, `PASSPORT`, `VOTER_ID`, `PAN` or `OTHER`), `number` (optional) and `file`.
+  - Accepts JPG, PNG, WEBP, HEIC or PDF, at most 5 MB. The real file content is checked, not the extension.
+  - Errors: `400 UNSUPPORTED_FILE`, `413` (file too large), `400 FILE_REQUIRED`.
+
+**Documents**
+- Every document comes back as `{ id, type, numberLast4, fileName, mimeType, size, fileUrl, fileUrlExpiresIn, createdAt }`. The full ID number is never returned.
+- `fileUrl` is a path such as `/api/v1/files/customer-documents/…?exp=…&u=…&sig=…`. Put the API origin in front and use it directly in `<img>` or a new tab; it needs no token. It expires after 5 minutes, so refetch the customer for a fresh link.
+- `DELETE /customers/:id/documents/:docId` is OWNER and MANAGER only.
+
+**Customers screen**
+- `GET /customers?search=&filter=repeat|nodoc|all&limit=&cursor=` returns `[{ id, name, phone, email, visits, totalSpent, lastVisitAt, hasDocument, documentType }]`, newest visit first. Pass `meta.nextCursor` as `cursor` for the next page.
+- `GET /customers/:id` returns the profile plus:
+  - `documents[]`
+  - `stays[]`: `{ id, role: MAIN|ADDED, roomNumber, roomType, checkInDate, checkOutDate, nights, guests, total, paid, balance, status }`
+  - `payments[]`
+- `PATCH /customers/:id` edits `{ name, phone, email, notes }`. A phone belonging to another customer returns `409 CUSTOMER_PHONE_EXISTS` with `existingCustomerId`; offer a merge.
+- `POST /customers/:id/merge` takes `{ intoCustomerId }` (OWNER, MANAGER) and moves stays and documents into the other customer.
+
+**Add a guest to a stay**
+- `POST /stays/:id/guests` takes `{ name, phone, guests (new total), businessDate, time }`. Any `rate` sent is ignored.
+- The response is `{ stay, guest: { id, customerId }, adjustment }`. `adjustment` is (new rate − old rate) × nights left, before GST. No cash entry is made; the folio changes.
+- Errors: `409 GUEST_LIMIT` (already 4, or more than 4), `400 INVALID_GUEST_COUNT` (not more than now), `409 STAY_NOT_IN_HOUSE`.
+- `currentStay.guestList[]` in `GET /rooms` lists the added guests with the price change.
+
+## Maintenance, room edit, split checkout, GST bills, bill prints (manager app)
+
+**⚠️ GST change:** new check-ins are charged room GST at 5% (up to ₹7,500 a night) or 18% (above), added on top, in place of the flat 12%. Food stays at 5%; service-request charges now add 18%. Guests already checked in keep 12%. Show the server's figures; don't compute GST in the app.
+
+**Maintenance**
+- `PATCH /rooms/:id/status` takes `{ status: "MAINTENANCE", reason, expectedBackDate }`. It's allowed from VACANT or DIRTY; an occupied room returns `409 ROOM_OCCUPIED`.
+- To end maintenance, send `{ status: "VACANT" }`. This clears the maintenance fields.
+- `GET /rooms` returns `maintenanceReason` and `maintenanceUntil`.
+- A maintenance room can't be checked into or shifted to (`409 ROOM_NOT_VACANT`), and isn't counted for bookings (`409 NO_ROOMS_AVAILABLE`).
+- Room types gain `totalRooms` (rooms that can be sold) and `availableRooms` (VACANT or DIRTY now). This includes the guest app's `GET /public/room-types`.
+- `GET /rooms/maintenance-history?roomId=` (OWNER, MANAGER) lists past and current maintenance periods.
+
+**Room edit**
+- `POST /rooms` and `PATCH /rooms/:id` accept `features` (from the fixed list in `ROOM_FEATURES`: "AC", "TV", "Hot water / geyser", "Wi-Fi", "Attached bathroom", "Balcony", "Double bed", "Twin beds", "Extra bed available", "Fridge", "Sofa / seating", "Work desk", "Power backup", "Window view") and `description`.
+- `PATCH /rooms/:id` also takes `floor`, `number` and `rate`:
+  - `number` can only change while the room has no stays; otherwise `409 ROOM_HAS_STAYS`.
+  - `rate` is the same as `singleRate`.
+- Stays in progress keep their rate after a price change.
+
+**Checkout with split payment**
+- `POST /stays/:id/checkout` takes `{ payments: [{ mode, amount, time, narration }] }`, with 1–10 rows. Modes can repeat.
+- Each row posts its own "Part payment" line; all rows and the checkout succeed or fail together.
+- If the total collected is short, the last row carries `shortfall`.
+- The response adds `entries[]` and `finalBill`.
+- This replaces the separate `PATCH { payment }` calls before checkout. The single `payment` still works, but don't send both.
+
+**Bill**
+- `GET /stays/:id/bill` returns:
+  - Header: `{ billNo, billDate, provisional, hotel: { name, gstin }, guest and room fields }`
+  - `sections: [{ key: STAY|FOOD|OTHER, sac, gstRate, lines: [{ description, qty, rate, amount, gstRate }], taxable, cgst, sgst, total }]`
+  - Totals: `taxable, cgst, sgst, total, payments: [{ mode, amount }], paid, balance`
+- `billNo` is null (`provisional: true`) until check-out.
+- `POST /bills/settle` now returns `taxable, cgst, sgst, gstPct, sac, gstin` too.
+
+**Bill prints**
+- `POST /stays/:id/bill-prints` takes `{ type: MANUAL|GENERATED, which: combined|stay|food|other|separate, amounts: { stay, food, other }, actualAmounts: { stay, food, other } }` and returns `201`. It records the print and changes nothing else.
+- `GET /stays/:id/bill-prints` (OWNER, MANAGER) lists them.
+- The report `GET /reports/manual-bills?date=` lists manual bills printed that day.
+
 ## Behaviour to expect
 
 - **Duplicate rule on stay payments:** a second payment of the same type and amount for the same guest, room and date returns `409 DUPLICATE_ENTRY` with `entryId`. This is the client's rule. Change the amount or edit the existing entry.

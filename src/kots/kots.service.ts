@@ -8,6 +8,7 @@ import { Paged } from '../common/interceptors/response.interceptor';
 import { Principal, userObjectId } from '../common/interfaces/principal';
 import { oid, oidOrNull } from '../common/pipes/parse-object-id.pipe';
 import { BusinessDateService } from '../common/services/business-date.service';
+import { GstService } from '../common/services/gst.service';
 import { TaxService } from '../common/services/tax.service';
 import { dec, sum, toD128 } from '../common/utils/money';
 import { CounterService } from '../database/counter.service';
@@ -50,6 +51,7 @@ export class KotsService {
     private readonly daybook: DaybookService,
     private readonly dates: BusinessDateService,
     private readonly events: EventsService,
+    private readonly gst: GstService,
   ) {}
 
   async list(q: KotQueryDto) {
@@ -84,7 +86,7 @@ export class KotsService {
       }
 
       const lines = await this.priceItems(input.items, session);
-      const bill = this.tax.food(sum(lines.map((l) => dec(l.price).times(l.qty))));
+      const bill = this.gst.food(sum(lines.map((l) => dec(l.price).times(l.qty))));
       const number = await this.counters.next('kot', session);
       const [kot] = await this.kots.create(
         [
@@ -108,7 +110,19 @@ export class KotsService {
 
       if (input.billTo === KotBillTo.ROOM) {
         await this.folio.create(
-          [{ stayId: input.stayId, head: `Food: KOT #${number}`, amount: kot.total, source: FolioSource.FOOD, kotId: kot._id }],
+          [
+            {
+              stayId: input.stayId,
+              head: `Food: KOT #${number}`,
+              amount: kot.total,
+              source: FolioSource.FOOD,
+              kotId: kot._id,
+              gstPct: this.gst.settings.foodPct,
+              taxable: kot.taxable,
+              cgst: kot.cgst,
+              sgst: kot.sgst,
+            },
+          ],
           { session },
         );
       }
@@ -175,7 +189,17 @@ export class KotsService {
       );
       await this.kots.updateMany({ _id: { $in: ids } }, { $set: { settledAt: new Date() } }, { session });
       afterCommit(() => this.events.toHotel('entry.created', { id: String(entry._id), businessDate: entry.businessDate }));
-      return { entry, total: total.toFixed(2) };
+      // Table bills carry the CGST + SGST of their KOTs.
+      return {
+        entry,
+        gstPct: this.gst.settings.foodPct,
+        sac: this.gst.settings.sac.FOOD,
+        gstin: this.gst.settings.gstin || null,
+        taxable: sum(kots.map((k) => k.taxable)).toFixed(2),
+        cgst: sum(kots.map((k) => k.cgst)).toFixed(2),
+        sgst: sum(kots.map((k) => k.sgst)).toFixed(2),
+        total: total.toFixed(2),
+      };
     });
   }
 

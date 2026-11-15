@@ -16,7 +16,8 @@
     "seed": "ts-node -r tsconfig-paths/register src/database/seeds/seed.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "jest --runInBand",
-    "migrate:room-pricing": "ts-node -r tsconfig-paths/register src/database/seeds/migrate-room-pricing.ts"
+    "migrate:room-pricing": "ts-node -r tsconfig-paths/register src/database/seeds/migrate-room-pricing.ts",
+    "migrate:customers": "ts-node -r tsconfig-paths/register src/database/seeds/migrate-customers.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.2.8",

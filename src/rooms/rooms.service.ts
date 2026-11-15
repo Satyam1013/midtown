@@ -9,14 +9,22 @@ import { EventsService } from '../notifications/events.service';
 import { RoomType } from '../room-types/schemas/room-type.schema';
 import { Stay, StayStatus } from '../stays/schemas/stay.schema';
 import { StayViewService } from '../stays/stay-view.service';
-import { CreateRoomDto, UpdateRoomDto } from './dto/room.dto';
+import { AuditService } from '../audit/audit.service';
+import { AuditAction } from '../audit/schemas/audit-log.schema';
+import { Principal, userObjectId } from '../common/interfaces/principal';
+import { TransactionService } from '../database/transaction.service';
+import { CreateRoomDto, SetRoomStatusDto, UpdateRoomDto } from './dto/room.dto';
+import { RoomMaintenance } from './schemas/room-maintenance.schema';
 import { Room, RoomCategory, RoomStatus } from './schemas/room.schema';
 
 // Allowed manual moves. OCCUPIED and DIRTY only ever come from check-in / check-out.
 const MANUAL_FROM: Partial<Record<RoomStatus, RoomStatus[]>> = {
   [RoomStatus.OOO]: [RoomStatus.VACANT, RoomStatus.DIRTY],
-  [RoomStatus.VACANT]: [RoomStatus.DIRTY, RoomStatus.OOO],
+  [RoomStatus.VACANT]: [RoomStatus.DIRTY, RoomStatus.OOO, RoomStatus.MAINTENANCE],
+  [RoomStatus.MAINTENANCE]: [RoomStatus.VACANT, RoomStatus.DIRTY],
 };
+
+const CLEAR_MAINTENANCE = { maintenanceReason: null, maintenanceUntil: null, maintenanceSince: null, maintenanceByUserId: null };
 
 const COLLATION = { locale: 'en', strength: 2 };
 
@@ -29,6 +37,9 @@ export class RoomsService {
     private readonly folio: FolioService,
     private readonly stayView: StayViewService,
     private readonly events: EventsService,
+    @InjectModel(RoomMaintenance.name) private readonly maintenance: Model<RoomMaintenance>,
+    private readonly tx: TransactionService,
+    private readonly audit: AuditService,
   ) {}
 
   /** All rooms with their type, prices and current stay, in the shape the manager app reads. */
@@ -50,6 +61,10 @@ export class RoomsService {
       return {
         ...room,
         category: room.category ?? type?.category ?? null,
+        features: room.features ?? [],
+        description: room.description ?? '',
+        maintenanceReason: room.maintenanceReason ?? null,
+        maintenanceUntil: room.maintenanceUntil ?? null,
         // Older rooms have only `rate`; it stands in for both until the manager sets them.
         singleRate: toD128(singleRateOf(room)),
         doubleRate: toD128(doubleRateOf(room)),
@@ -89,46 +104,122 @@ export class RoomsService {
       singleRate: toD128(single),
       doubleRate: toD128(double),
       rate: toD128(single),
+      features: dto.features ?? [],
+      description: dto.description?.trim() ?? '',
     });
   }
 
-  /** Category, type and prices. Stays in progress keep the rates they were charged. */
-  async update(id: Types.ObjectId, dto: UpdateRoomDto) {
-    const room = await this.rooms.findById(id);
-    if (!room) throw notFound('Room');
-    const changingType = dto.roomTypeId !== undefined || dto.roomType !== undefined;
-    const type = changingType
-      ? await this.resolveType(dto.roomTypeId, dto.roomType)
-      : await this.types.findById(room.roomTypeId).lean();
-    if (!type) throw notFound('Room type');
-    const category = this.categoryFor(dto.category ?? (changingType ? undefined : room.category ?? undefined), type);
+  /**
+   * Room details, type and prices. Stays in progress keep the rate they were
+   * charged: each stay holds its own rate and room-charge segments.
+   */
+  async update(id: Types.ObjectId, dto: UpdateRoomDto, user: Principal) {
+    return this.tx.run(async ({ session }) => {
+      const room = await this.rooms.findById(id).session(session);
+      if (!room) throw notFound('Room');
+      const before = { number: room.number, floor: room.floor, category: room.category, roomTypeId: room.roomTypeId, singleRate: room.singleRate ?? room.rate, doubleRate: room.doubleRate ?? room.rate };
+      const changingType = dto.roomTypeId !== undefined || dto.roomType !== undefined;
+      const type = changingType
+        ? await this.resolveType(dto.roomTypeId, dto.roomType)
+        : await this.types.findById(room.roomTypeId).session(session).lean();
+      if (!type) throw notFound('Room type');
+      const category = this.categoryFor(dto.category ?? (changingType ? undefined : room.category ?? undefined), type);
 
-    room.roomTypeId = type._id;
-    room.category = category;
-    if (dto.singleRate !== undefined) {
-      room.singleRate = toD128(dto.singleRate);
-      room.rate = room.singleRate;
-    }
-    if (dto.doubleRate !== undefined) room.doubleRate = toD128(dto.doubleRate);
-    // Older rooms get explicit rates the first time they're edited.
-    room.singleRate ??= room.rate;
-    room.doubleRate ??= room.rate;
-    await room.save();
-    return room;
+      if (dto.number !== undefined && dto.number !== room.number) {
+        if (await this.stays.exists({ roomId: id }).setOptions({ withDeleted: true }).session(session)) {
+          throw conflict('ROOM_HAS_STAYS', 'This room has stays on record, so its number can’t change');
+        }
+        if (await this.rooms.exists({ number: dto.number }).setOptions({ withDeleted: true }).session(session)) {
+          throw conflict('ROOM_EXISTS', `Room ${dto.number} already exists`);
+        }
+        room.number = dto.number;
+      }
+      if (dto.floor !== undefined) room.floor = dto.floor;
+      room.roomTypeId = type._id;
+      room.category = category;
+      const single = dto.singleRate ?? dto.rate;
+      if (dto.singleRate && dto.rate && dto.singleRate !== dto.rate) {
+        throw badRequest('RATE_MISMATCH', 'rate and singleRate must match; send singleRate only');
+      }
+      if (single !== undefined) {
+        room.singleRate = toD128(single);
+        room.rate = room.singleRate;
+      }
+      if (dto.doubleRate !== undefined) room.doubleRate = toD128(dto.doubleRate);
+      // Older rooms get explicit rates the first time they're edited.
+      room.singleRate ??= room.rate;
+      room.doubleRate ??= room.rate;
+      if (dto.features !== undefined) room.features = [...new Set(dto.features)];
+      if (dto.description !== undefined) room.description = dto.description.trim();
+      await room.save({ session });
+      await this.audit.record(
+        AuditAction.ROOM_UPDATE,
+        null,
+        userObjectId(user),
+        {
+          roomId: id,
+          before,
+          after: { number: room.number, floor: room.floor, category: room.category, roomTypeId: room.roomTypeId, singleRate: room.singleRate, doubleRate: room.doubleRate },
+          priceChanged: String(before.singleRate) !== String(room.singleRate) || String(before.doubleRate) !== String(room.doubleRate),
+        },
+        session,
+      );
+      return room;
+    });
   }
 
-  async setStatus(id: Types.ObjectId, status: RoomStatus) {
+  /** Past and current maintenance periods, newest first. */
+  maintenanceHistory(roomId?: string) {
+    return this.maintenance.find(roomId ? { roomId } : {}).sort({ startedAt: -1 }).limit(500).lean();
+  }
+
+  async setStatus(id: Types.ObjectId, dto: SetRoomStatusDto, user: Principal) {
+    const { status } = dto;
     const from = MANUAL_FROM[status];
     if (!from) {
       throw conflict('MANUAL_STATUS_NOT_ALLOWED', `${status} is set by check-in and check-out, not by hand`);
     }
-    // Conditional, so it can't overwrite a check-in that happened a moment ago.
-    const room = await this.rooms.findOneAndUpdate({ _id: id, status: { $in: from } }, { $set: { status } }, { new: true });
-    if (!room) {
-      if (!(await this.rooms.exists({ _id: id }))) throw notFound('Room');
-      throw conflict('INVALID_ROOM_STATUS', `This room can't move to ${status} right now`);
-    }
-    this.events.toHotel('room.status.changed', { roomId: String(room._id), status: room.status });
+    const room = await this.tx.run(async ({ session, afterCommit }) => {
+      const current = await this.rooms.findById(id).session(session).lean();
+      if (!current) throw notFound('Room');
+      const toMaintenance = status === RoomStatus.MAINTENANCE;
+      const set = toMaintenance
+        ? {
+            status,
+            maintenanceReason: dto.reason?.trim() ?? '',
+            maintenanceUntil: dto.expectedBackDate ?? null,
+            maintenanceSince: new Date(),
+            maintenanceByUserId: userObjectId(user),
+          }
+        : { status, ...CLEAR_MAINTENANCE };
+      // Conditional, so it can't overwrite a check-in that happened a moment ago.
+      const updated = await this.rooms.findOneAndUpdate({ _id: id, status: { $in: from } }, { $set: set }, { new: true, session });
+      if (!updated) {
+        if (current.status === RoomStatus.OCCUPIED) throw conflict('ROOM_OCCUPIED', 'A guest is in this room');
+        throw conflict('INVALID_ROOM_STATUS', `This room can't move from ${current.status} to ${status}`);
+      }
+      if (toMaintenance) {
+        await this.maintenance.create(
+          [{ roomId: id, reason: set.maintenanceReason, expectedBackDate: set.maintenanceUntil, startedAt: new Date(), startedByUserId: userObjectId(user) }],
+          { session },
+        );
+      } else if (current.status === RoomStatus.MAINTENANCE) {
+        await this.maintenance.updateOne(
+          { roomId: id, endedAt: null },
+          { $set: { endedAt: new Date(), endedByUserId: userObjectId(user), endedTo: status } },
+          { session },
+        );
+      }
+      await this.audit.record(
+        AuditAction.ROOM_STATUS,
+        null,
+        userObjectId(user),
+        { roomId: id, from: current.status, to: status, reason: dto.reason ?? null, expectedBackDate: dto.expectedBackDate ?? null },
+        session,
+      );
+      afterCommit(() => this.events.toHotel('room.status.changed', { roomId: String(updated._id), status: updated.status }));
+      return updated;
+    });
     return room;
   }
 
