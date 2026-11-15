@@ -52,12 +52,14 @@ const roomStatus = async (number: string) => ((await ctx.model('Room').findById(
 
 async function guestToken(room: string, phone: string) {
   await ctx.model('OtpChallenge').deleteMany({});
-  await ctx.api().post(`${V1}/auth/guest/request-otp`).send({ roomNumber: room, phone }).expect(200);
-  return (await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ roomNumber: room, phone, otp: lastOtp }).expect(200)).body.data.accessToken;
+  await ctx.api().post(`${V1}/auth/guest/request-otp`).send({ phone }).expect(200);
+  return (await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ phone, otp: lastOtp }).expect(200)).body.data.accessToken;
 }
+const activeStayId = async (phone: string) => String(((await ctx.model('Stay').findOne({ phone, status: 'IN_HOUSE' }).lean()) as any)._id);
 async function shiftRequest(room: string, phone: string, note = 'Want a bigger room') {
   const token = await guestToken(room, phone);
-  return (await ctx.api().post(`${V1}/guest/service-requests`).set(bearer(token)).send({ key: 'ROOM_SHIFT', note }).expect(201)).body.data.id;
+  const res = await ctx.api().post(`${V1}/guest/service-requests`).set(bearer(token)).send({ key: 'ROOM_SHIFT', note, stayIds: [await activeStayId(phone)] }).expect(201);
+  return res.body.data.rooms[0].requestId;
 }
 const shift = (stayId: string, body: object) => ctx.api().post(`${V1}/stays/${stayId}/shift`).set(staff()).send({ time: '12:00', businessDate: ctx.today, ...body });
 
@@ -118,7 +120,7 @@ describe('Pricing by guest count', () => {
       .send({ payment: { kind: 'ADVANCE', amount: '1000.00', mode: 'CASH', businessDate: ctx.today, time: '10:00' } })
       .expect(200);
     const out = (await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff()).send({}).expect(200)).body.data;
-    expect(out.bill).toEqual({ roomCharges: '4830.00', food: '0.00', otherCharges: '0.00', payments: '1000.00', total: '3830.00' });
+    expect(out.bill).toEqual({ roomCharges: '4830.00', food: '0.00', adjustments: '0.00', otherCharges: '0.00', payments: '1000.00', total: '3830.00' });
     expect(out.folioBalance).toBe('3830.00');
   });
 
@@ -146,7 +148,7 @@ describe('Room shift', () => {
     const a = await checkIn('401', '9600000001', 1, -1, 3);
     const b = await checkIn('402', '9600000002', 1, -1, 3);
     const tokenA = await guestToken('401', '9600000001');
-    const otherKind = (await ctx.api().post(`${V1}/guest/service-requests`).set(bearer(tokenA)).send({ key: 'laundry' }).expect(201)).body.data.id;
+    const otherKind = (await ctx.api().post(`${V1}/guest/service-requests`).set(bearer(tokenA)).send({ key: 'laundry', stayIds: [a.id] }).expect(201)).body.data.rooms[0].requestId;
     expect((await shift(a.id, { requestId: otherKind, toRoomId: rooms['403'], guests: 1 }).expect(400)).body.code).toBe('INVALID_SHIFT_REQUEST');
     const bRequest = await shiftRequest('402', '9600000002');
     expect((await shift(a.id, { requestId: bRequest, toRoomId: rooms['403'], guests: 1 }).expect(400)).body.code).toBe('INVALID_SHIFT_REQUEST');
@@ -181,7 +183,7 @@ describe('Room shift', () => {
     const stay = await checkIn('405', '9600000003', 1, 0, 2);
     await shiftRequest('405', '9600000003');
     const token = await guestToken('405', '9600000003');
-    const dup = await ctx.api().post(`${V1}/guest/service-requests`).set(bearer(token)).send({ key: 'ROOM_SHIFT', note: 'again' }).expect(409);
+    const dup = await ctx.api().post(`${V1}/guest/service-requests`).set(bearer(token)).send({ key: 'ROOM_SHIFT', note: 'again', stayIds: [stay.id] }).expect(409);
     expect(dup.body.code).toBe('SHIFT_REQUEST_OPEN');
     await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff()).send({}).expect(200);
     await ctx.api().patch(`${V1}/rooms/${rooms['405']}/status`).set(staff()).send({ status: 'VACANT' }).expect(200);
@@ -208,16 +210,17 @@ describe('Room shift', () => {
     const listed = (await ctx.api().get(`${V1}/service-requests`).set(staff()).expect(200)).body.data.find((r: any) => r.id === requestId);
     expect(listed.roomNumber).toBe('403');
     const guest = await guestToken('403', '9600000004');
-    expect((await ctx.api().get(`${V1}/guest/stay`).set(bearer(guest)).expect(200)).body.data.room.number).toBe('403');
+    const [booking] = (await ctx.api().get(`${V1}/guest/bookings`).set(bearer(guest)).expect(200)).body.data.bookings;
+    expect(booking.rooms.map((x: any) => x.roomNumber)).toEqual(['403']);
     const chai = String(((await ctx.model('MenuItem').findOne({ name: 'Masala Chai' }).lean()) as any)._id);
-    await ctx.api().post(`${V1}/guest/orders`).set(bearer(guest)).send({ items: [{ menuItemId: chai, qty: 1 }], billTo: 'ROOM' }).expect(201); // 20 + 5%
+    await ctx.api().post(`${V1}/guest/orders`).set(bearer(guest)).send({ stayId: stay.id, items: [{ menuItemId: chai, qty: 1 }], billTo: 'ROOM' }).expect(201); // 20 + 5%
     const rooms403 = (await ctx.api().get(`${V1}/rooms`).set(staff()).expect(200)).body.data.find((r: any) => r.number === '403');
     expect(rooms403.currentStay.shifts).toHaveLength(1);
 
     // Checkout total after a shift: room charges + food − payments, and no cash entry from the shift.
     expect(await ctx.model('DayRegisterEntry').countDocuments({ stayId: stay.id })).toBe(0);
     const out = (await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff()).send({}).expect(200)).body.data;
-    expect(out.bill).toEqual({ roomCharges: '6825.00', food: '21.00', otherCharges: '0.00', payments: '0.00', total: '6846.00' });
+    expect(out.bill).toEqual({ roomCharges: '6825.00', food: '21.00', adjustments: '0.00', otherCharges: '0.00', payments: '0.00', total: '6846.00' });
     expect(await roomStatus('403')).toBe('DIRTY');
     for (const r of ['401', '403']) await ctx.api().patch(`${V1}/rooms/${rooms[r]}/status`).set(staff()).send({ status: 'VACANT' }).expect(200);
   });

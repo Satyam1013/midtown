@@ -14,9 +14,10 @@ export class FolioService {
     const lines = await this.lines.find({ stayId }).sort({ createdAt: 1 }).lean();
     const by: Record<string, Decimal> = { TARIFF: dec(0), FOOD: dec(0), OTHER: dec(0), PAYMENT: dec(0), REFUND: dec(0) };
     for (const line of lines) by[line.source] = (by[line.source] ?? dec(0)).plus(dec(line.amount));
-    const total = by.TARIFF.plus(by.FOOD).plus(by.OTHER);
+    const total = by.TARIFF.plus(by.FOOD).plus(by.OTHER).plus(by.ADJUSTMENT ?? 0);
     // Payments are negative lines and refunds positive, so this is money received net of refunds.
-    const paid = by.PAYMENT.plus(by.REFUND).negated();
+    // Balance moved to customer credit settles the stay like a payment does.
+    const paid = by.PAYMENT.plus(by.REFUND).plus(by.CREDIT ?? 0).negated();
     return {
       lines,
       total: total.toFixed(2),
@@ -26,6 +27,7 @@ export class FolioService {
       breakdown: {
         roomCharges: by.TARIFF.toFixed(2),
         food: by.FOOD.toFixed(2),
+        adjustments: (by.ADJUSTMENT ?? dec(0)).toFixed(2),
         otherCharges: by.OTHER.toFixed(2),
         payments: paid.toFixed(2),
         total: total.minus(paid).toFixed(2),

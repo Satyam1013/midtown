@@ -7,6 +7,9 @@ export class Feedback {
   @Prop(ref('Stay'))
   stayId: Types.ObjectId;
 
+  @Prop({ type: Types.ObjectId, ref: 'Booking', default: null })
+  bookingId: Types.ObjectId | null;
+
   @Prop({ required: true, min: 1, max: 5, validate: Number.isInteger })
   rating: number;
 

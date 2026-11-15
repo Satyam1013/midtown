@@ -3,7 +3,9 @@ import { OnGatewayConnection, OnGatewayInit, WebSocketGateway } from '@nestjs/we
 import { Server, Socket } from 'socket.io';
 import { TokenService } from '../auth/token.service';
 import { ALL_STAFF, Role } from '../common/enums';
-import { EventsService, HOTEL_ROOM, stayRoom } from './events.service';
+import { Types } from 'mongoose';
+import { GuestScopeService } from '../auth/guest-scope.service';
+import { customerRoom, EventsService, HOTEL_ROOM, stayRoom } from './events.service';
 
 // Room membership comes only from the verified token. There is deliberately no
 // "join" message, so a client has no way to ask for another stay's room.
@@ -21,6 +23,7 @@ export class NotificationsGateway implements OnGatewayInit, OnGatewayConnection 
   constructor(
     private readonly tokens: TokenService,
     private readonly events: EventsService,
+    private readonly scope: GuestScopeService,
   ) {}
 
   afterInit(server: Server) {
@@ -33,7 +36,11 @@ export class NotificationsGateway implements OnGatewayInit, OnGatewayConnection 
       const token = String(socket.handshake.auth?.token ?? header);
       const user = await this.tokens.principalFrom(token);
       if (ALL_STAFF.includes(user.role)) await socket.join(HOTEL_ROOM);
-      else if (user.role === Role.GUEST) await socket.join(stayRoom(user.stayId));
+      else if (user.role === Role.GUEST && user.customerId) {
+        // A customer hears about each room they're checked in to now.
+        const active = await this.scope.activeStays(new Types.ObjectId(user.customerId));
+        await socket.join([customerRoom(user.customerId), ...active.map((s) => stayRoom(s._id))]);
+      }
       else socket.disconnect(true);
     } catch {
       this.logger.debug('rejected socket connection');

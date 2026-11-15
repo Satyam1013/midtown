@@ -1,3 +1,4 @@
+import { MAX_GUESTS } from '../../config/pricing';
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 import { businessDate, buildSchema, LIVE, money, ref } from '../../database/build-schema';
@@ -23,7 +24,7 @@ export class RoomCharge {
   @Prop({ required: true })
   roomNumber: string;
 
-  @Prop({ required: true, min: 1, max: 4 })
+  @Prop({ required: true, min: 1, max: MAX_GUESTS })
   guests: number;
 
   @Prop(money())
@@ -74,7 +75,7 @@ export class Stay {
   rate: Types.Decimal128;
 
   /** Current number of guests, 1–4. */
-  @Prop({ required: true, min: 1, max: 4, default: 1 })
+  @Prop({ required: true, min: 1, max: MAX_GUESTS, default: 1 })
   guests: number;
 
   /** In order; nights add up to `nights`. Empty on stays from before segments. */

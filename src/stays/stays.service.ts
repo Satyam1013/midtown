@@ -14,11 +14,13 @@ import { GstService, StayGstMode } from '../common/services/gst.service';
 import { TaxService } from '../common/services/tax.service';
 import { dec, toD128 } from '../common/utils/money';
 import { normalizePhone } from '../common/utils/phone';
-import { nightlyRate } from '../config/pricing';
+import { assertFits, nightlyRate, occupancyRate, roomCapacity } from '../config/pricing';
 import { DaybookService } from '../daybook/daybook.service';
 import { TransactionService } from '../database/transaction.service';
 import { LedgerService } from '../entries/ledger.service';
-import { EntrySource } from '../entries/schemas/day-register-entry.schema';
+import { DayRegisterEntry, EntrySource } from '../entries/schemas/day-register-entry.schema';
+import { Settlement } from './schemas/settlement.schema';
+import { settlementRow } from './settlement-row';
 import { FolioService } from '../folio/folio.service';
 import { FolioLine, FolioSource } from '../folio/schemas/folio-line.schema';
 import { EventsService } from '../notifications/events.service';
@@ -29,15 +31,18 @@ import {
   ServiceRequestKey,
   ServiceRequestStatus,
 } from '../service-requests/schemas/service-request.schema';
-import { AddGuestDto, CheckInDto, CheckOutDto, ShiftRoomDto, StayPaymentDto, StayPaymentKind, UpdateStayDto } from './dto/stay.dto';
+import { AddGuestDto, AdjustmentKind, CheckInDto, CheckoutAdjustmentDto, CheckOutDto, ShiftRoomDto, StayPaymentDto, StayPaymentKind, UpdateStayDto } from './dto/stay.dto';
 import { RoomShift, ShiftKind } from './schemas/room-shift.schema';
 import { StayGuest } from './schemas/stay-guest.schema';
 import { CustomersService } from '../customers/customers.service';
-import { MAX_GUESTS } from '../config/pricing';
+import { CustomerCreditService } from '../customers/customer-credit.service';
 import { Stay, StayDocument, StayStatus } from './schemas/stay.schema';
 import { StayViewService } from './stay-view.service';
 import { StayBillService } from './stay-bill.service';
 import { CounterService } from '../database/counter.service';
+
+/** Payments through "Edit stay" this soon before check-out count as part of it. */
+const SETTLEMENT_WINDOW_MS = 2 * 60_000;
 
 const PAYMENT_TYPE: Record<StayPaymentKind, string> = {
   [StayPaymentKind.ADVANCE]: 'Advance',
@@ -82,13 +87,15 @@ export class StaysService {
     private readonly gst: GstService,
     private readonly counters: CounterService,
     private readonly bills: StayBillService,
+    private readonly creditLedger: CustomerCreditService,
+    @InjectModel(Settlement.name) private readonly settlements: Model<Settlement>,
+    @InjectModel(DayRegisterEntry.name) private readonly entries: Model<DayRegisterEntry>,
   ) {}
 
   async checkIn(dto: CheckInDto, user: Principal) {
     const checkIn = dto.businessDate ?? this.dates.today();
     this.dates.assertAllowed(checkIn, user);
     const { checkOut, nights } = this.stayLength(checkIn, dto.checkOut, dto.nights);
-    const guests = dto.guests ?? 1;
 
     const stayId = await this.tx.run(async ({ session, afterCommit }) => {
       // The status flip is the lock: of two simultaneous check-ins only one can match VACANT.
@@ -101,8 +108,9 @@ export class StaysService {
         if (!(await this.rooms.exists({ _id: dto.roomId }).session(session))) throw notFound('Room');
         throw conflict('ROOM_NOT_VACANT', 'This room is not vacant');
       }
-      // Any rate the app sent is ignored; the room and guest count decide it.
-      const rate = toD128(nightlyRate(room, guests));
+      // Any rate the app sent is ignored. A booked room is charged what was booked
+      // (later tariff changes don't apply); a walk-in is charged the room's own prices.
+      const { guests, rate, lineId } = await this.checkInRate(room, dto, session);
       const customer = await this.customers.forVisit({ customerId: dto.customerId, name: dto.guestName, phone: dto.phone }, session);
 
       const [stay] = await this.stays.create(
@@ -130,6 +138,11 @@ export class StaysService {
         session,
       );
       stay.roomCharges = [segment] as any;
+      // Every stay belongs to a booking; a walk-in gets its own one-room booking.
+      if (!stay.bookingId) {
+        const booking = await this.customers.bookingForStay(stay, room.roomTypeId, session);
+        stay.bookingId = booking._id;
+      }
       await stay.save({ session });
       let advance = null;
       if (dto.advance && dec(dto.advance.amount).gt(0)) {
@@ -157,6 +170,15 @@ export class StaysService {
       }
       if (dto.bookingId) {
         await this.bookings.updateOne({ _id: dto.bookingId }, { $set: { status: BookingStatus.CHECKED_IN } }, { session });
+        if (lineId) {
+          // Claims the line; a check-in racing for the same line conflicts and is retried with the next one.
+          const claimed = await this.bookings.updateOne(
+            { _id: dto.bookingId, roomLines: { $elemMatch: { _id: lineId, stayId: null } } },
+            { $set: { 'roomLines.$.stayId': stay._id } },
+            { session },
+          );
+          if (!claimed.modifiedCount) throw conflict('BOOKING_LINE_TAKEN', 'That booked room was just checked in; try again');
+        }
       }
 
       afterCommit(() => {
@@ -167,6 +189,28 @@ export class StaysService {
       return { stayId: stay._id, customerId: customer._id };
     });
     return { stay: await this.present(stayId.stayId), customer: { id: stayId.customerId } };
+  }
+
+  private async checkInRate(room: Room & { _id: Types.ObjectId }, dto: CheckInDto, session: ClientSession) {
+    if (dto.bookingId) {
+      const booking = await this.bookings.findById(dto.bookingId).session(session).lean();
+      if (!booking) throw notFound('Booking');
+      // The booking's next free line, preferring one of this room's type.
+      const free = (booking.roomLines ?? []).filter((l) => !l.stayId);
+      const line = free.find((l) => String(l.roomTypeId) === String(room.roomTypeId)) ?? free[0] ?? null;
+      const guests = dto.guests ?? line?.guests ?? 1;
+      assertFits(room, guests);
+      const lineId = line?._id ?? null;
+      if (line && guests === line.guests) return { guests, rate: line.rate, lineId };
+      const saved = line?.rateCard ?? booking.rateCard;
+      if (saved) {
+        const card = { singleRate: dec(saved.singleRate), doubleRate: dec(saved.doubleRate), additionalGuestRate: dec(saved.additionalGuestRate) };
+        return { guests, rate: toD128(occupancyRate(card, guests)), lineId };
+      }
+      return { guests, rate: toD128(nightlyRate(room, guests)), lineId };
+    }
+    const guests = dto.guests ?? 1;
+    return { guests, rate: toD128(nightlyRate(room, guests)), lineId: null };
   }
 
   /** Edit a stay, with at most one advance, part payment or refund, and an optional guest-count change. */
@@ -263,8 +307,10 @@ export class StaysService {
         throw conflict('STAY_NOT_IN_HOUSE', 'This stay has already checked out');
       }
       const current = stay.guests ?? 1;
-      if (current >= MAX_GUESTS || dto.guests > MAX_GUESTS) {
-        throw conflict('GUEST_LIMIT', `A room takes at most ${MAX_GUESTS} guests`);
+      const room = await this.rooms.findById(stay.roomId).session(session);
+      const capacity = roomCapacity(room!);
+      if (current >= capacity || dto.guests > capacity) {
+        throw conflict('GUEST_LIMIT', `Room ${room!.number} sleeps at most ${capacity} guests`);
       }
       if (dto.guests <= current) {
         throw badRequest('INVALID_GUEST_COUNT', `guests is the new total and must be more than ${current}`);
@@ -273,7 +319,6 @@ export class StaysService {
       if (stayed < 0 || date > stay.checkOut) throw badRequest('INVALID_DATE', 'The date must fall within the stay');
       const nightsLeft = stay.nights - stayed;
 
-      const room = await this.rooms.findById(stay.roomId).session(session);
       const segments = await this.segmentsOf(stay, session);
       const oldRate = this.last(segments).rate;
       const newRate = toD128(nightlyRate(room!, dto.guests));
@@ -438,122 +483,224 @@ export class StaysService {
   }
 
   /**
-   * Check-out posts one CHECKOUT line on the open business day for the money
-   * received. If the guest leaves owing money, the gap is stored as the
-   * line's shortfall and stays on the folio; nothing is written off.
+   * Check-out, in one transaction: adjustments to the folio, one ledger row
+   * per payment (for mode totals and cash reconciliation), the stay closed,
+   * and one Settlement owning those rows, which is what the register shows.
+   * Payments taken through PATCH /stays/:id in the two minutes before belong
+   * to the check-out too. An Idempotency-Key makes a retry return the first result.
    */
-  async checkOut(id: Types.ObjectId, dto: CheckOutDto, user: Principal) {
+  async checkOut(id: Types.ObjectId, dto: CheckOutDto, user: Principal, idempotencyKey?: string) {
     if (dto.payment && dto.payments) throw badRequest('PAYMENT_CONFLICT', 'Send payment or payments, not both');
-    const result = await this.tx.run(async ({ session, afterCommit }) => {
-      const businessDate = await this.daybook.requireOpenDay(session);
-      const stay = await this.stays.findOneAndUpdate(
-        { _id: id, status: StayStatus.IN_HOUSE },
-        { $set: { status: StayStatus.CHECKED_OUT, checkedOutAt: new Date() } },
-        { new: true, session },
-      );
-      if (!stay) {
-        if (!(await this.stays.exists({ _id: id }).session(session))) throw notFound('Stay');
-        throw conflict('STAY_NOT_IN_HOUSE', 'This stay has already checked out');
-      }
-      const room = await this.rooms.findByIdAndUpdate(stay.roomId, { $set: { status: RoomStatus.DIRTY } }, { new: true, session });
-      // A shift can't happen after check-out, so open shift requests lapse.
-      await this.requests.updateMany(
-        { stayId: stay._id, key: ServiceRequestKey.ROOM_SHIFT, status: { $nin: CLOSED_REQUEST_STATUSES } },
-        { $set: { status: ServiceRequestStatus.EXPIRED, remark: 'Guest checked out' } },
-        { session },
-      );
+    const key = idempotencyKey?.trim() || null;
+    const replay = async () => {
+      if (!key) return null;
+      const done = await this.settlements.findOne({ idempotencyKey: key }).lean();
+      if (!done) return null;
+      if (String(done.stayId) !== String(id)) throw conflict('IDEMPOTENCY_KEY_REUSED', 'This Idempotency-Key was used for another check-out');
+      return this.checkoutResult(id);
+    };
+    const earlier = await replay();
+    if (earlier) return earlier;
+    try {
+      await this.tx.run((ctx) => this.checkOutTx(id, dto, user, key, ctx));
+    } catch (err: any) {
+      // A double tap that lost the race: answer with the check-out that won.
+      const again = key && (err?.code === 11000 || err?.response?.code === 'STAY_NOT_IN_HOUSE') ? await replay() : null;
+      if (again) return again;
+      throw err;
+    }
+    return this.checkoutResult(id);
+  }
 
-      const [charges] = await this.folioLines.aggregate<{ total: Types.Decimal128 }>([
-        { $match: { stayId: stay._id, deletedAt: null, source: { $nin: [FolioSource.PAYMENT, FolioSource.REFUND] } } },
-        { $group: { _id: null, total: { $sum: '$amount' } } },
-      ]).session(session);
-      await this.customers.addSpent(stay.customerId, dec(charges?.total).toFixed(2), session);
-      const owed = dec((await this.folio.balances([stay._id], session)).get(String(stay._id)));
-      // One row per payment. A split (`payments`) posts one Part payment line per row, so each
-      // mode lands in its own day-book total; the old single `payment` posts one Check-out line.
-      const split = !!dto.payments?.length;
-      const rows = split ? dto.payments! : dto.payment && dec(dto.payment.amount).gt(0) ? [dto.payment] : [];
-      const received = rows.reduce((t, r) => t.plus(dec(r.amount)), dec(0));
-      const shortfall = Decimal.max(0, owed.minus(received));
-      const posted: Awaited<ReturnType<LedgerService['post']>>[] = [];
-      for (const [i, row] of rows.entries()) {
-        const last = i === rows.length - 1;
-        posted.push(
-          await this.ledger.post(
-            {
-              businessDate,
-              time: row.time,
-              roomId: stay.roomId,
-              stayId: stay._id,
-              guestName: stay.guestName,
-              phone: stay.phone,
-              vehicle: stay.vehicle,
-              type: split ? 'Part payment' : 'Check-out',
-              mode: row.mode,
-              dc: DebitCredit.CREDIT,
-              amount: dec(row.amount).toFixed(2),
-              narration:
-                row.narration ??
-                (last && shortfall.gt(0) ? `Settlement, room ${room?.number}: ${shortfall.toFixed(2)} unpaid` : `Settlement, room ${room?.number}`),
-              source: EntrySource.CHECKOUT,
-              shortfall: last && shortfall.gt(0) ? shortfall.toFixed(2) : null,
-              // Split rows may repeat a mode and amount on purpose.
-              dupCheck: !split,
-              createdByUserId: userObjectId(user),
-              folio: { head: split ? `Payment at check-out (${row.mode})` : 'Payment at check-out', source: FolioSource.PAYMENT },
-            },
-            session,
-          ),
-        );
+  private async checkOutTx(
+    id: Types.ObjectId,
+    dto: CheckOutDto,
+    user: Principal,
+    idempotencyKey: string | null,
+    { session, afterCommit }: { session: ClientSession; afterCommit: (fn: () => void) => void },
+  ) {
+    const businessDate = await this.daybook.requireOpenDay(session);
+    const rows = dto.payments?.length ? dto.payments : dto.payment && dec(dto.payment.amount).gt(0) ? [dto.payment] : [];
+    const time = dto.time ?? rows[0]?.time ?? this.dates.nowTime();
+    const stay = await this.stays.findOneAndUpdate(
+      { _id: id, status: StayStatus.IN_HOUSE },
+      { $set: { status: StayStatus.CHECKED_OUT, checkedOutAt: new Date() } },
+      { new: true, session },
+    );
+    if (!stay) {
+      if (!(await this.stays.exists({ _id: id }).session(session))) throw notFound('Stay');
+      throw conflict('STAY_NOT_IN_HOUSE', 'This stay has already checked out');
+    }
+    const room = await this.rooms.findByIdAndUpdate(stay.roomId, { $set: { status: RoomStatus.DIRTY } }, { new: true, session });
+    // The booking is CHECKED_OUT once none of its rooms is still in house.
+    if (stay.bookingId && !(await this.stays.exists({ bookingId: stay.bookingId, status: StayStatus.IN_HOUSE }).session(session))) {
+      await this.bookings.updateOne({ _id: stay.bookingId }, { $set: { status: BookingStatus.CHECKED_OUT } }, { session });
+    }
+    // A shift can't happen after check-out, so open shift requests lapse.
+    await this.requests.updateMany(
+      { stayId: stay._id, key: ServiceRequestKey.ROOM_SHIFT, status: { $nin: CLOSED_REQUEST_STATUSES } },
+      { $set: { status: ServiceRequestStatus.EXPIRED, remark: 'Guest checked out' } },
+      { session },
+    );
+
+    // 1. Adjustments change the folio before anything is settled.
+    for (const adj of dto.adjustments ?? []) await this.applyAdjustment(stay, adj, businessDate, user, session);
+
+    const [charges] = await this.folioLines.aggregate<{ total: Types.Decimal128 }>([
+      { $match: { stayId: stay._id, deletedAt: null, source: { $nin: [FolioSource.PAYMENT, FolioSource.REFUND, FolioSource.CREDIT] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]).session(session);
+    const billTotal = dec(charges?.total);
+    await this.customers.addSpent(stay.customerId, billTotal.toFixed(2), session);
+
+    // Payments posted just before through "Edit stay" are part of this check-out.
+    const attached = await this.entries
+      .find({
+        stayId: stay._id,
+        businessDate,
+        source: EntrySource.STAY_PAYMENT,
+        settlementId: null,
+        createdAt: { $gte: new Date(Date.now() - SETTLEMENT_WINDOW_MS) },
+      })
+      .session(session)
+      .lean();
+
+    // 2. Each payment is its own ledger row, so mode totals and expected cash stay exact.
+    const owed = dec((await this.folio.balances([stay._id], session)).get(String(stay._id)));
+    const received = rows.reduce((t, r) => t.plus(dec(r.amount)), dec(0));
+    const onCredit = dec(dto.creditAmount ?? '0');
+    if (onCredit.gt(0)) {
+      if (!stay.customerId) throw badRequest('NO_CUSTOMER', 'This stay has no customer to put on credit');
+      if (onCredit.gt(owed.minus(received))) {
+        throw badRequest('CREDIT_TOO_HIGH', `Only ${Decimal.max(0, owed.minus(received)).toFixed(2)} is left unpaid`);
       }
-      if (!rows.length && shortfall.gt(0)) {
-        // Nothing collected: a zero line still records what the guest owes.
-        posted.push(
-          await this.ledger.post(
-            {
-              businessDate,
-              time: this.dates.nowTime(),
-              roomId: stay.roomId,
-              stayId: stay._id,
-              guestName: stay.guestName,
-              phone: stay.phone,
-              vehicle: stay.vehicle,
-              type: 'Check-out',
-              mode: PaymentMode.CASH,
-              dc: DebitCredit.CREDIT,
-              amount: '0.00',
-              narration: `Settlement, room ${room?.number}: ${shortfall.toFixed(2)} unpaid`,
-              source: EntrySource.CHECKOUT,
-              shortfall: shortfall.toFixed(2),
-              createdByUserId: userObjectId(user),
-            },
-            session,
-          ),
-        );
-      }
-      // The bill number is given once, here, and never reused: a per-financial-year counter.
-      const fy = this.gst.financialYear(businessDate);
-      stay.billNo = StayBillService.format(this.gst.settings.billPrefix, fy, await this.counters.next(`bill:${fy}`, session));
-      stay.billDate = businessDate;
-      await stay.save({ session });
-      const entry = posted[posted.length - 1] ?? null;
-      afterCommit(() => {
-        this.events.toHotel('room.status.changed', { roomId: String(stay.roomId), status: room?.status });
-        this.events.toHotelAndStay('stay.updated', stay._id, { stayId: String(stay._id), status: stay.status });
-        for (const e of posted) this.events.toHotel('entry.created', { id: String(e._id), businessDate });
-        this.events.endStay(stay._id);
-      });
-      return { stay, entry, entries: posted, shortfall };
+      // Settles the folio like a payment, and the customer owes it instead. No money moves.
+      await this.creditLedger.charge(
+        stay.customerId,
+        { amount: onCredit.toFixed(2), narration: `Unpaid at check-out, room ${room?.number}`, businessDate, time, stayId: stay._id },
+        user,
+        session,
+      );
+      await this.folioLines.create([{ stayId: stay._id, head: 'Moved to customer credit', amount: toD128(onCredit.negated()), source: FolioSource.CREDIT }], { session });
+    }
+    const posted: Awaited<ReturnType<LedgerService['post']>>[] = [];
+    for (const row of rows) {
+      posted.push(
+        await this.ledger.post(
+          {
+            businessDate,
+            time: row.time ?? time,
+            roomId: stay.roomId,
+            stayId: stay._id,
+            guestName: stay.guestName,
+            phone: stay.phone,
+            vehicle: stay.vehicle,
+            type: 'Check-out',
+            mode: row.mode,
+            dc: DebitCredit.CREDIT,
+            amount: dec(row.amount).toFixed(2),
+            narration: row.narration ?? dto.narration ?? '',
+            source: EntrySource.CHECKOUT,
+            // Rows of one check-out may repeat a mode and amount on purpose.
+            dupCheck: false,
+            createdByUserId: userObjectId(user),
+            folio: { head: `Payment at check-out (${row.mode})`, source: FolioSource.PAYMENT },
+          },
+          session,
+        ),
+      );
+    }
+
+    // 3. Unpaid balance, and 4. the one settlement that owns the rows.
+    const shortfall = Decimal.max(0, owed.minus(received).minus(onCredit));
+    const owned = [...attached, ...posted];
+    const [settlement] = await this.settlements.create(
+      [
+        {
+          stayId: stay._id,
+          roomId: stay.roomId,
+          customerId: stay.customerId ?? null,
+          businessDate,
+          time,
+          guestName: stay.guestName,
+          phone: stay.phone,
+          vehicle: stay.vehicle,
+          narration: dto.narration ?? rows.find((r) => r.narration)?.narration ?? attached.find((e) => e.narration)?.narration ?? '',
+          billTotal: toD128(billTotal),
+          amount: toD128(owned.reduce((t, e) => t.plus(dec(e.amount)), dec(0))),
+          payments: owned.map((e) => ({ entryId: e._id, mode: e.mode, amount: e.amount })),
+          creditAmount: onCredit.gt(0) ? toD128(onCredit) : null,
+          shortfall: shortfall.gt(0) ? toD128(shortfall) : null,
+          idempotencyKey,
+          createdByUserId: userObjectId(user),
+        },
+      ],
+      { session },
+    );
+    if (owned.length) {
+      await this.entries.updateMany({ _id: { $in: owned.map((e) => e._id) } }, { $set: { settlementId: settlement._id } }, { session });
+    }
+
+    // The bill number is given once, here, and never reused: a per-financial-year counter.
+    const fy = this.gst.financialYear(businessDate);
+    stay.billNo = StayBillService.format(this.gst.settings.billPrefix, fy, await this.counters.next(`bill:${fy}`, session));
+    stay.billDate = businessDate;
+    await stay.save({ session });
+    await this.audit.record(
+      AuditAction.CHECKOUT,
+      stay._id,
+      userObjectId(user),
+      { settlementId: settlement._id, billTotal: settlement.billTotal, amount: settlement.amount, shortfall: settlement.shortfall, creditAmount: settlement.creditAmount, adjustments: dto.adjustments ?? [] },
+      session,
+      businessDate,
+    );
+    afterCommit(() => {
+      this.events.toHotel('room.status.changed', { roomId: String(stay.roomId), status: room?.status });
+      this.events.toHotelAndStay('stay.updated', stay._id, { stayId: String(stay._id), status: stay.status });
+      this.events.toHotel('entry.created', { id: String(settlement._id), businessDate });
+      this.events.endStay(stay._id);
     });
-    const bill = await this.folio.summary(result.stay._id);
+  }
+
+  /** A discount or complimentary item lowers a section; a half day raises the stay. GST follows the section's rate. */
+  private async applyAdjustment(stay: StayDocument, adj: CheckoutAdjustmentDto, businessDate: string, user: Principal, session: ClientSession) {
+    const adds = adj.kind === AdjustmentKind.HALF_DAY;
+    if (adds && adj.section !== 'STAY') throw badRequest('INVALID_ADJUSTMENT', 'A half day is charged on the stay');
+    const s = this.gst.settings;
+    const pct = adj.section === 'STAY' ? this.gst.roomPct(stay.rate, stay.gst) : adj.section === 'FOOD' ? s.foodPct : s.otherPct;
+    if (!adds) {
+      const sources = { STAY: FolioSource.TARIFF, FOOD: FolioSource.FOOD, OTHER: FolioSource.OTHER }[adj.section];
+      const lines = await this.folioLines.find({ stayId: stay._id, $or: [{ source: sources }, { source: FolioSource.ADJUSTMENT, section: adj.section }] }).session(session).lean();
+      const sectionTotal = lines.reduce((t, l) => t.plus(dec(l.amount)), dec(0));
+      if (dec(adj.amount).gt(sectionTotal)) {
+        throw badRequest('ADJUSTMENT_TOO_HIGH', `The ${adj.section.toLowerCase()} charges are only ${sectionTotal.toFixed(2)}`);
+      }
+    }
+    const b = this.gst.fromTotal(adj.amount, pct);
+    const sign = (d: Decimal) => toD128(adds ? d : d.negated());
+    const label = { DISCOUNT: 'Discount', HALF_DAY: 'Half day', COMPLIMENTARY: 'Complimentary' }[adj.kind];
+    const [line] = await this.folioLines.create(
+      [{ stayId: stay._id, source: FolioSource.ADJUSTMENT, section: adj.section, head: `${label}: ${adj.reason.trim()}`, amount: sign(b.total), gstPct: pct, taxable: sign(b.taxable), cgst: sign(b.cgst), sgst: sign(b.sgst) }],
+      { session },
+    );
+    await this.audit.record(AuditAction.STAY_ADJUSTMENT, stay._id, userObjectId(user), { folioLineId: line._id, ...adj }, session, businessDate);
+  }
+
+  /** The check-out as the app reads it, also used to answer a retried request. */
+  private async checkoutResult(stayId: Types.ObjectId) {
+    const settlement = await this.settlements.findOne({ stayId }).lean();
+    const ledgerRows = await this.entries.find({ settlementId: settlement?._id ?? null }).sort({ createdAt: 1 }).lean();
+    const bill = await this.folio.summary(stayId);
+    const room = settlement ? await this.rooms.findById(settlement.roomId).select('number').lean() : null;
     return {
-      stay: await this.present(result.stay._id),
-      entry: result.entry,
-      entries: result.entries,
-      shortfall: toD128(result.shortfall),
+      stay: await this.present(stayId),
+      settlement: settlement ? settlementRow(settlement, room?.number ?? null) : null,
+      entry: ledgerRows[ledgerRows.length - 1] ?? null,
+      entries: ledgerRows,
+      shortfall: settlement?.shortfall ?? toD128('0'),
       folioBalance: bill.balance,
       bill: bill.breakdown,
-      finalBill: await this.bills.build(result.stay._id),
+      finalBill: await this.bills.build(stayId),
     };
   }
 

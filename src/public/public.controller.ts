@@ -1,3 +1,5 @@
+import { BookingsService } from '../bookings/bookings.service';
+import { QuoteDto } from '../room-types/dto/room-type.dto';
 import { Body, Controller, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
@@ -15,6 +17,7 @@ export class PublicController {
   constructor(
     private readonly roomTypes: RoomTypesService,
     private readonly bookings: PublicBookingsService,
+    private readonly bookingsService: BookingsService,
   ) {}
 
   @Throttle({ default: { limit: 60, ttl: 60_000 } })
@@ -31,6 +34,13 @@ export class PublicController {
   }
 
   @Throttle({ default: { limit: 20, ttl: 600_000 } })
+  /** The price of a booking before making it; same calculation as the booking. */
+  @HttpCode(200)
+  @Post('bookings/quote')
+  quote(@Body() dto: QuoteDto) {
+    return this.bookingsService.quote(dto);
+  }
+
   @Post('bookings')
   book(@Body() dto: PublicBookingDto) {
     return this.bookings.book(dto);

@@ -5,7 +5,7 @@ import { CurrentUser, Roles } from '../common/decorators';
 import { DESK } from '../common/enums';
 import { Principal } from '../common/interfaces/principal';
 import { ParseObjectIdPipe } from '../common/pipes/parse-object-id.pipe';
-import { AdjustStockDto } from './dto/stock.dto';
+import { AdjustStockDto, CreateStockItemDto } from './dto/stock.dto';
 import { StockService } from './stock.service';
 
 @ApiTags('Back office')
@@ -18,6 +18,11 @@ export class StockController {
   @Get()
   list() {
     return this.stock.list();
+  }
+
+  @Post()
+  create(@Body() dto: CreateStockItemDto, @CurrentUser() user: Principal) {
+    return this.stock.create(dto, user);
   }
 
   @HttpCode(200)

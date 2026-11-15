@@ -2,7 +2,6 @@ import { Global, Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
 import { ThrottlerModule } from '@nestjs/throttler';
-import { GuestStayGuard } from '../common/guards/guest-stay.guard';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { AuthController } from './auth.controller';
@@ -20,10 +19,9 @@ import { TokenService } from './token.service';
     TokenService,
     SmsService,
     GuestScopeService,
-    GuestStayGuard,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
-  exports: [TokenService, GuestScopeService, GuestStayGuard, SmsService],
+  exports: [TokenService, GuestScopeService, SmsService],
 })
 export class AuthModule {}

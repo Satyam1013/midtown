@@ -1,3 +1,4 @@
+import { RoomLineDto, RoomLines } from '../../bookings/dto/room-lines.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsBusinessDate } from '../../common/dto/common.dto';
 import { IsInt, IsMongoId, IsNotEmpty, IsOptional, IsString, Matches, MaxLength, Min } from 'class-validator';
@@ -24,17 +25,20 @@ export class PublicBookingDto {
   @IsString() @Matches(/^\d{6}$/, { message: 'otp must be 6 digits' })
   otp: string;
 
-  @ApiProperty({ type: String })
-  @IsMongoId()
-  roomTypeId: string;
+  /** Older apps: the one room type of the booking. New apps send it per room in `rooms`. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsMongoId()
+  roomTypeId?: string;
 
-  @ApiProperty({ type: Number })
-  @IsInt() @Min(1)
-  rooms: number;
+  /** One entry per room: { roomTypeId, guests }. A number (older apps) is split by `pax`. */
+  @ApiProperty({ type: [RoomLineDto] })
+  @RoomLines()
+  rooms: RoomLineDto[];
 
-  @ApiProperty({ type: Number })
-  @IsInt() @Min(1)
-  pax: number;
+  /** Total guests; must equal the sum of guests when given. */
+  @ApiPropertyOptional({ type: Number })
+  @IsOptional() @IsInt() @Min(1)
+  pax?: number;
 
   @ApiProperty({ type: String })
   @IsBusinessDate()

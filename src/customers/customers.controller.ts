@@ -8,7 +8,8 @@ import { Principal } from '../common/interfaces/principal';
 import { ParseObjectIdPipe } from '../common/pipes/parse-object-id.pipe';
 import { CustomerDocumentsService, MAX_DOCUMENT_BYTES, UploadedFileLike } from './customer-documents.service';
 import { CustomersService } from './customers.service';
-import { CustomerListQueryDto, LookupQueryDto, MergeCustomerDto, SignedLinkQueryDto, UpdateCustomerDto, UploadDocumentDto } from './dto/customer.dto';
+import { CustomerCreditService } from './customer-credit.service';
+import { CreditEntryDto, CustomerListQueryDto, LookupQueryDto, MergeCustomerDto, SignedLinkQueryDto, UpdateCustomerDto, UploadDocumentDto } from './dto/customer.dto';
 
 @ApiTags('Customers')
 @ApiBearerAuth()
@@ -18,6 +19,7 @@ export class CustomersController {
   constructor(
     private readonly customers: CustomersService,
     private readonly documents: CustomerDocumentsService,
+    private readonly creditLedger: CustomerCreditService,
   ) {}
 
   /** 200 with `{ customer: null }` for a phone not seen before. */
@@ -46,6 +48,12 @@ export class CustomersController {
   @Post(':id/merge')
   merge(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @Body() dto: MergeCustomerDto, @CurrentUser() user: Principal) {
     return this.customers.merge(id, dto.intoCustomerId, user);
+  }
+
+  /** Udhaar: CHARGE (owes more, no money moves) or PAYMENT (receipt on the open business day). */
+  @Post(':id/credit')
+  credit(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @Body() dto: CreditEntryDto, @CurrentUser() user: Principal) {
+    return this.creditLedger.post(id, dto, user);
   }
 
   @Get(':id/documents')

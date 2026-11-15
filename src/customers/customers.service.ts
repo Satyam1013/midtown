@@ -14,8 +14,13 @@ import { FolioLine } from '../folio/schemas/folio-line.schema';
 import { RoomType } from '../room-types/schemas/room-type.schema';
 import { Room } from '../rooms/schemas/room.schema';
 import { StayGuest } from '../stays/schemas/stay-guest.schema';
-import { Stay } from '../stays/schemas/stay.schema';
+import { Stay, StayStatus } from '../stays/schemas/stay.schema';
+import { Booking, BookingSource, BookingStatus } from '../bookings/schemas/booking.schema';
+import { CounterService } from '../database/counter.service';
 import { CustomerDocumentsService } from './customer-documents.service';
+import { CustomerCreditService } from './customer-credit.service';
+import { Settlement } from '../stays/schemas/settlement.schema';
+import { settlementRow } from '../stays/settlement-row';
 import { CustomerListQueryDto, UpdateCustomerDto } from './dto/customer.dto';
 import { CustomerDocument } from './schemas/customer-document.schema';
 import { Customer } from './schemas/customer.schema';
@@ -39,7 +44,11 @@ export class CustomersService {
     @InjectModel(RoomType.name) private readonly roomTypes: Model<RoomType>,
     @InjectModel(FolioLine.name) private readonly folio: Model<FolioLine>,
     @InjectModel(DayRegisterEntry.name) private readonly entries: Model<DayRegisterEntry>,
+    @InjectModel(Booking.name) private readonly bookings: Model<Booking>,
     private readonly docs: CustomerDocumentsService,
+    private readonly counters: CounterService,
+    private readonly credit: CustomerCreditService,
+    @InjectModel(Settlement.name) private readonly settlementModel: Model<Settlement>,
     private readonly tx: TransactionService,
     private readonly audit: AuditService,
   ) {}
@@ -77,6 +86,84 @@ export class CustomersService {
     return customer;
   }
 
+  /**
+   * The customer for a phone, created if new, without counting a visit.
+   * Used by guest sign-in and by bookings. Null when the phone isn't 10 digits.
+   */
+  async byPhone(rawPhone: string | null | undefined, name = '', session?: ClientSession) {
+    const phone = customerPhone(rawPhone);
+    if (!phone) return null;
+    const upsert = () =>
+      this.customers.findOneAndUpdate(
+        { phone },
+        { $setOnInsert: { phone, name: name.trim(), visits: 0, firstVisitAt: null, lastVisitAt: null } },
+        { new: true, upsert: true, session, setDefaultsOnInsert: true },
+      );
+    let customer;
+    try {
+      customer = await upsert();
+    } catch (err: any) {
+      // Two first-time sign-ins at once: the loser of the unique index reads the winner's row.
+      if (err?.code !== 11000 || session) throw err;
+      customer = await upsert();
+    }
+    if (!customer!.name && name.trim()) {
+      customer!.name = name.trim();
+      await customer!.save({ session });
+    }
+    return customer!;
+  }
+
+  /**
+   * Makes a customer's history visible to them: bookings and stays with their
+   * phone but no customer are linked, and stays with no booking get one.
+   */
+  async adopt(customerId: Types.ObjectId, phone: string | null) {
+    if (phone) {
+      await this.bookings.updateMany({ customerId: null, phone }, { $set: { customerId } });
+      await this.stays.updateMany({ customerId: null, phone }, { $set: { customerId } });
+    }
+    const loose = await this.stays.find({ customerId, $or: [{ bookingId: null }, { bookingId: { $exists: false } }] }).lean();
+    for (const stay of loose) {
+      await this.tx.run(async ({ session }) => {
+        const room = await this.rooms.findById(stay.roomId).select('roomTypeId').session(session).lean();
+        // Re-checked inside the transaction so a concurrent sign-in can't make two.
+        const fresh = await this.stays.findOne({ _id: stay._id, bookingId: null }).session(session).lean();
+        if (fresh && room) await this.bookingForStay(fresh, room.roomTypeId, session);
+      });
+    }
+  }
+
+  /** A one-room walk-in booking for a stay that came without one. */
+  async bookingForStay(
+    stay: { _id: Types.ObjectId; guestName: string; phone: string; checkIn: string; checkOut: string; nights: number; rate: Types.Decimal128; guests?: number; status: string; customerId?: Types.ObjectId | null },
+    roomTypeId: Types.ObjectId,
+    session: ClientSession,
+  ) {
+    const seq = await this.counters.next('walkin-booking', session);
+    const [booking] = await this.bookings.create(
+      [
+        {
+          source: BookingSource.WalkIn,
+          ref: `WI${String(seq).padStart(6, '0')}`,
+          guestName: stay.guestName,
+          phone: stay.phone ?? '',
+          roomTypeId,
+          rooms: 1,
+          pax: stay.guests ?? 1,
+          arrivalDate: stay.checkIn,
+          departureDate: stay.checkOut,
+          amount: toD128(dec(stay.rate).times(stay.nights)),
+          status: stay.status === StayStatus.IN_HOUSE ? BookingStatus.CHECKED_IN : BookingStatus.CHECKED_OUT,
+          customerId: stay.customerId ?? null,
+        },
+      ],
+      { session },
+    );
+    await this.stays.updateOne({ _id: stay._id }, { $set: { bookingId: booking._id } }, { session });
+    return booking;
+  }
+
   /** Adds a checked-out stay's charges to its customer's total. */
   async addSpent(customerId: Types.ObjectId | null | undefined, amount: string, session: ClientSession) {
     if (!customerId || dec(amount).isZero()) return;
@@ -96,7 +183,10 @@ export class CustomersService {
 
   async list(q: CustomerListQueryDto) {
     const limit = q.limit ?? 50;
-    const filter: Record<string, unknown> = {};
+    // Customers who only signed in to the guest app (no stay yet) are left out,
+    // unless the list is of customers who owe money.
+    const filter: Record<string, unknown> =
+      q.hasCredit === 'true' ? { creditBalance: { $gt: Types.Decimal128.fromString('0') } } : { lastVisitAt: { $ne: null } };
     const and: Record<string, unknown>[] = [];
     if (q.filter === 'repeat') filter.visits = { $gt: 1 };
     if (q.filter === 'nodoc') filter.documentCount = 0;
@@ -112,13 +202,18 @@ export class CustomersService {
     }
     if (q.cursor) {
       const { t, id } = this.decodeCursor(q.cursor);
-      and.push({ $or: [{ lastVisitAt: { $lt: t } }, { lastVisitAt: t, _id: { $lt: id } }] });
+      // Customers with no visit sort last.
+      and.push(
+        t
+          ? { $or: [{ lastVisitAt: { $lt: t } }, { lastVisitAt: t, _id: { $lt: id } }, { lastVisitAt: null }] }
+          : { lastVisitAt: null, _id: { $lt: id } },
+      );
     }
     if (and.length) filter.$and = and;
     const rows = await this.customers.find(filter).sort({ lastVisitAt: -1, _id: -1 }).limit(limit + 1).lean();
     const page = rows.slice(0, limit);
     const last = page[page.length - 1];
-    const nextCursor = rows.length > limit && last ? this.encodeCursor(last.lastVisitAt!, last._id) : null;
+    const nextCursor = rows.length > limit && last ? this.encodeCursor(last.lastVisitAt ?? null, last._id) : null;
     return new Paged(
       page.map((c) => ({
         id: c._id,
@@ -127,6 +222,7 @@ export class CustomersService {
         email: c.email,
         visits: c.visits,
         totalSpent: c.totalSpent,
+        creditBalance: c.creditBalance ?? Types.Decimal128.fromString('0'),
         lastVisitAt: c.lastVisitAt,
         hasDocument: c.documentCount > 0,
         documentType: c.documentType,
@@ -147,14 +243,16 @@ export class CustomersService {
     const stays = [...main, ...extra].sort((a, b) => b.checkIn.localeCompare(a.checkIn));
     const stayIds = stays.map((s) => s._id);
 
-    const [rooms, money, payments, documents] = await Promise.all([
+    const settlements = await this.settlementModel.find({ stayId: { $in: stayIds } }).lean();
+    const [rooms, money, payments, documents, creditEntries] = await Promise.all([
       this.rooms.find({ _id: { $in: stays.map((s) => s.roomId) } }).select('number roomTypeId').lean(),
       this.folio.aggregate<{ _id: { stayId: Types.ObjectId; paid: boolean }; total: Types.Decimal128 }>([
         { $match: { stayId: { $in: stayIds }, deletedAt: null } },
         { $group: { _id: { stayId: '$stayId', paid: { $in: ['$source', ['PAYMENT', 'REFUND']] } }, total: { $sum: '$amount' } } },
       ]),
-      this.entries.find({ stayId: { $in: stayIds } }).sort({ businessDate: -1, time: -1 }).lean(),
+      this.entries.find({ stayId: { $in: stayIds }, settlementId: null }).sort({ businessDate: -1, time: -1 }).lean(),
       this.docs.list(id, user),
+      this.credit.listFor(id),
     ]);
     const types = await this.roomTypes.find({ _id: { $in: rooms.map((r) => r.roomTypeId) } }).select('name').lean();
     const roomOf = new Map(rooms.map((r) => [String(r._id), r]));
@@ -175,6 +273,18 @@ export class CustomersService {
       createdAt: (c as any).createdAt,
       hasDocument: c.documentCount > 0,
       documentType: c.documentType,
+      creditBalance: c.creditBalance ?? Types.Decimal128.fromString('0'),
+      creditEntries: creditEntries.map((e) => ({
+        id: e._id,
+        kind: e.kind,
+        amount: e.amount,
+        mode: e.mode,
+        narration: e.narration,
+        businessDate: e.businessDate,
+        time: e.time,
+        stayId: e.stayId,
+        createdAt: (e as any).createdAt,
+      })),
       documents,
       stays: stays.map((s) => {
         const room = roomOf.get(String(s.roomId));
@@ -196,16 +306,26 @@ export class CustomersService {
           status: s.status,
         };
       }),
-      payments: payments.map((e) => ({
-        id: e._id,
-        stayId: e.stayId,
-        businessDate: e.businessDate,
-        type: e.type,
-        mode: e.mode,
-        dc: e.dc,
-        amount: e.amount,
-        narration: e.narration,
-      })),
+      // One line per check-out, plus advances and part payments during stays.
+      payments: [
+        ...payments.map((e) => ({
+          id: e._id,
+          stayId: e.stayId,
+          businessDate: e.businessDate,
+          time: e.time,
+          type: e.type,
+          mode: e.mode,
+          dc: e.dc,
+          amount: e.amount,
+          narration: e.narration,
+          payments: null as unknown,
+          shortfall: null as unknown,
+        })),
+        ...settlements.map((x) => {
+          const row = settlementRow(x, roomOf.get(String(x.roomId))?.number ?? null);
+          return { id: row.id, stayId: row.stayId, businessDate: row.businessDate, time: row.time, type: row.type, mode: row.mode, dc: row.dc, amount: row.amount, narration: row.narration, payments: row.payments, shortfall: row.shortfall };
+        }),
+      ].sort((a, b) => b.businessDate.localeCompare(a.businessDate) || String(b.time ?? '').localeCompare(String(a.time ?? ''))),
     };
   }
 
@@ -283,15 +403,15 @@ export class CustomersService {
     });
   }
 
-  private encodeCursor(t: Date, id: Types.ObjectId) {
-    return Buffer.from(JSON.stringify({ t: t.toISOString(), id: String(id) })).toString('base64url');
+  private encodeCursor(t: Date | null, id: Types.ObjectId) {
+    return Buffer.from(JSON.stringify({ t: t ? t.toISOString() : null, id: String(id) })).toString('base64url');
   }
 
   private decodeCursor(cursor: string) {
     try {
       const { t, id } = JSON.parse(Buffer.from(cursor, 'base64url').toString());
-      const date = new Date(t);
-      if (Number.isNaN(+date) || !Types.ObjectId.isValid(id)) throw new Error();
+      const date = t === null ? null : new Date(t);
+      if ((date && Number.isNaN(+date)) || !Types.ObjectId.isValid(id)) throw new Error();
       return { t: date, id: new Types.ObjectId(id) };
     } catch {
       throw badRequest('INVALID_CURSOR', 'The cursor is not valid');

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Param, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Types } from 'mongoose';
 import { CurrentUser, Roles } from '../common/decorators';
@@ -66,7 +66,12 @@ export class StaysController {
 
   @HttpCode(200)
   @Post(':id/checkout')
-  checkOut(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @Body() dto: CheckOutDto, @CurrentUser() user: Principal) {
-    return this.stays.checkOut(id, dto, user);
+  checkOut(
+    @Param('id', ParseObjectIdPipe) id: Types.ObjectId,
+    @Body() dto: CheckOutDto,
+    @CurrentUser() user: Principal,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.stays.checkOut(id, dto, user, idempotencyKey);
   }
 }

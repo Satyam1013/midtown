@@ -20,6 +20,18 @@ export class RoomType {
   @Prop(money({ required: false, default: null }))
   tariff: Types.Decimal128 | null;
 
+  /** Per night for 1 guest, GST excluded. `tariff` is kept equal to it. */
+  @Prop(money({ required: false, default: null }))
+  singleRate: Types.Decimal128 | null;
+
+  /** Per night for 2 guests, GST excluded. */
+  @Prop(money({ required: false, default: null }))
+  doubleRate: Types.Decimal128 | null;
+
+  /** Per night for each guest beyond 2. */
+  @Prop(money({ required: false, default: () => Types.Decimal128.fromString('0') }))
+  additionalGuestRate: Types.Decimal128;
+
   @Prop({ type: String, default: '' })
   beds: string;
 

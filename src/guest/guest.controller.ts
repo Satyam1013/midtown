@@ -1,74 +1,63 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Body, Controller, Get, HttpCode, Param, Post } from '@nestjs/common';
 import { BookingsService } from '../bookings/bookings.service';
+import { QuoteDto } from '../room-types/dto/room-type.dto';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { GuestBookingDto } from '../bookings/dto/booking.dto';
-import { GuestStay, Roles } from '../common/decorators';
+import { CurrentUser, Roles } from '../common/decorators';
 import { ALL_STAFF, Role } from '../common/enums';
-import { GuestStayGuard } from '../common/guards/guest-stay.guard';
-import { CreateFeedbackDto } from '../feedback/dto/feedback.dto';
-import { Feedback } from '../feedback/schemas/feedback.schema';
-import { FolioService } from '../folio/folio.service';
+import { Principal } from '../common/interfaces/principal';
+import { GuestFeedbackDto } from '../feedback/dto/feedback.dto';
 import { GuestOrderDto } from '../kots/dto/kot.dto';
-import { KotsService } from '../kots/kots.service';
-import { KotSource } from '../kots/schemas/kot.schema';
 import { MenuService } from '../menu/menu.service';
-import { RoomType } from '../room-types/schemas/room-type.schema';
 import { RoomTypesService } from '../room-types/room-types.service';
-import { Room } from '../rooms/schemas/room.schema';
-import { CheckoutRequestDto, CreateServiceRequestDto } from '../service-requests/dto/service-request.dto';
-import { ServiceRequestsService } from '../service-requests/service-requests.service';
+import { GuestCheckoutRequestDto, GuestServiceRequestDto } from '../service-requests/dto/service-request.dto';
+import { GuestService } from './guest.service';
 
-// SECURITY: no route here takes an id. Stay-scoped routes use GuestStayGuard,
-// which resolves the stay from the token, and every query is keyed on that.
+// SECURITY: every route works on the customer named by the token. Ids in a
+// path or body (bookingId, stayIds, stayId) are checked to be that customer's.
 @ApiTags('Guest')
 @ApiBearerAuth()
 @Roles(Role.GUEST)
 @Controller('guest')
 export class GuestController {
   constructor(
-    @InjectModel(Room.name) private readonly rooms: Model<Room>,
-    @InjectModel(RoomType.name) private readonly types: Model<RoomType>,
-    @InjectModel(Feedback.name) private readonly feedbacks: Model<Feedback>,
-    private readonly folio: FolioService,
+    private readonly guest: GuestService,
     private readonly menu: MenuService,
     private readonly roomTypes: RoomTypesService,
-    private readonly kots: KotsService,
-    private readonly bookings: BookingsService,
-    private readonly requests: ServiceRequestsService,
+    private readonly bookingsQuote: BookingsService,
   ) {}
 
-  @UseGuards(GuestStayGuard)
-  @Get('stay')
-  async stay(@GuestStay() stay: any) {
-    const room = await this.rooms.findById(stay.roomId).select('number floor rate roomTypeId').lean();
-    const type = room && (await this.types.findById(room.roomTypeId).select('name tariff').lean());
-    return { stay, room: room && { ...room, roomType: type } };
+  @Get('me')
+  me(@CurrentUser() user: Principal) {
+    return this.guest.me(user);
   }
 
-  @UseGuards(GuestStayGuard)
-  @Get('folio')
-  myFolio(@GuestStay() stay: any) {
-    return this.folio.summary(stay._id);
+  @Get('bookings')
+  bookings(@CurrentUser() user: Principal) {
+    return this.guest.listBookings(user);
+  }
+
+  @Get('bookings/:bookingId/folio')
+  folio(@CurrentUser() user: Principal, @Param('bookingId') bookingId: string) {
+    return this.guest.bookingFolio(user, bookingId);
+  }
+
+  @Roles(Role.GUEST, Role.VISITOR)
+  @HttpCode(200)
+  @Post('bookings/quote')
+  quote(@Body() dto: QuoteDto) {
+    return this.bookingsQuote.quote(dto);
+  }
+
+  @Post('bookings')
+  book(@CurrentUser() user: Principal, @Body() dto: GuestBookingDto) {
+    return this.guest.book(user, dto);
   }
 
   @Roles(Role.GUEST, Role.VISITOR)
   @Get('menu')
   menuItems() {
     return this.menu.list(true);
-  }
-
-  @UseGuards(GuestStayGuard)
-  @Post('orders')
-  placeOrder(@GuestStay() stay: any, @Body() dto: GuestOrderDto) {
-    return this.kots.place({ ...dto, stayId: stay._id, source: KotSource.GUEST_APP });
-  }
-
-  @UseGuards(GuestStayGuard)
-  @Get('orders')
-  orders(@GuestStay() stay: any) {
-    return this.kots.listForStay(stay._id);
   }
 
   // The manager app also loads room types from here, so staff tokens are allowed.
@@ -78,33 +67,33 @@ export class GuestController {
     return this.roomTypes.list();
   }
 
-  @Roles(Role.GUEST, Role.VISITOR)
-  @Post('bookings')
-  book(@Body() dto: GuestBookingDto) {
-    return this.bookings.createFromGuest(dto);
+  @Post('orders')
+  placeOrder(@CurrentUser() user: Principal, @Body() dto: GuestOrderDto) {
+    return this.guest.placeOrder(user, dto);
   }
 
-  @UseGuards(GuestStayGuard)
+  @Get('orders')
+  orders(@CurrentUser() user: Principal) {
+    return this.guest.listOrders(user);
+  }
+
   @Post('service-requests')
-  createRequest(@GuestStay() stay: any, @Body() dto: CreateServiceRequestDto) {
-    return this.requests.create(stay._id, dto.key, dto.note);
+  createRequest(@CurrentUser() user: Principal, @Body() dto: GuestServiceRequestDto) {
+    return this.guest.createRequests(user, dto);
   }
 
-  @UseGuards(GuestStayGuard)
   @Get('service-requests')
-  listRequests(@GuestStay() stay: any) {
-    return this.requests.listForStay(stay._id);
+  listRequests(@CurrentUser() user: Principal) {
+    return this.guest.listRequests(user);
   }
 
-  @UseGuards(GuestStayGuard)
   @Post('checkout-request')
-  checkoutRequest(@GuestStay() stay: any, @Body() dto: CheckoutRequestDto) {
-    return this.requests.requestCheckout(stay._id, dto.note);
+  checkoutRequest(@CurrentUser() user: Principal, @Body() dto: GuestCheckoutRequestDto) {
+    return this.guest.checkoutRequest(user, dto);
   }
 
-  @UseGuards(GuestStayGuard)
   @Post('feedback')
-  giveFeedback(@GuestStay() stay: any, @Body() dto: CreateFeedbackDto) {
-    return this.feedbacks.create({ stayId: stay._id, rating: dto.rating, text: dto.text ?? '' });
+  giveFeedback(@CurrentUser() user: Principal, @Body() dto: GuestFeedbackDto) {
+    return this.guest.feedback(user, dto);
   }
 }

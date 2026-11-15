@@ -18,6 +18,8 @@ export enum BookingStatus {
   CONFIRMED = 'CONFIRMED',
   ARRIVING = 'ARRIVING',
   CHECKED_IN = 'CHECKED_IN',
+  /** Every room of the booking has checked out. */
+  CHECKED_OUT = 'CHECKED_OUT',
   CANCELLED = 'CANCELLED',
 }
 
@@ -61,6 +63,40 @@ export class Booking {
   @Prop({ type: String, enum: Object.values(BookingStatus), default: BookingStatus.REQUESTED })
   status: BookingStatus;
 
+  /** The customer who sees this booking in the guest app: the logged-in booker, else the one with this phone. */
+  @Prop(ref('Customer', { required: false }))
+  customerId: Types.ObjectId | null;
+
+  /** Guests and nightly rate of each room, worked out when booked. Check-in charges these, whatever the tariff is later. */
+  @Prop({
+    type: [
+      {
+        roomTypeId: { type: Types.ObjectId, ref: 'RoomType' },
+        guests: { type: Number, required: true },
+        rate: { type: Types.Decimal128, required: true },
+        rateCard: { type: { _id: false, singleRate: Types.Decimal128, doubleRate: Types.Decimal128, additionalGuestRate: Types.Decimal128 }, default: null },
+        /** The stay that took this line at check-in; null until a room is assigned. */
+        stayId: { type: Types.ObjectId, ref: 'Stay', default: null },
+      },
+    ],
+    default: [],
+  })
+  roomLines: {
+    _id: Types.ObjectId;
+    roomTypeId: Types.ObjectId;
+    guests: number;
+    rate: Types.Decimal128;
+    rateCard: { singleRate: Types.Decimal128; doubleRate: Types.Decimal128; additionalGuestRate: Types.Decimal128 } | null;
+    stayId: Types.ObjectId | null;
+  }[];
+
+  /** The room type's prices when booked, for a room checked in with a different guest count. */
+  @Prop({
+    type: { _id: false, singleRate: Types.Decimal128, doubleRate: Types.Decimal128, additionalGuestRate: Types.Decimal128 },
+    default: null,
+  })
+  rateCard: { singleRate: Types.Decimal128; doubleRate: Types.Decimal128; additionalGuestRate: Types.Decimal128 } | null;
+
   @Prop({ type: String, default: '' })
   note: string;
 }
@@ -71,6 +107,7 @@ export const BookingSchema = buildSchema(Booking);
 BookingSchema.index({ arrivalDate: 1, status: 1 });
 BookingSchema.index({ status: 1, createdAt: -1 });
 BookingSchema.index({ phone: 1 });
+BookingSchema.index({ customerId: 1, createdAt: -1 });
 // The same OTA booking can't be imported twice.
 BookingSchema.index(
   { source: 1, ref: 1 },

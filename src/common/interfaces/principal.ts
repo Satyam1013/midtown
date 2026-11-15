@@ -5,12 +5,12 @@ export interface Principal {
   role: Role;
   /** Staff tokens only. */
   userId?: string;
-  /** GUEST tokens only. The one and only source of a guest's stay. */
-  stayId?: string;
+  /** GUEST tokens only: the customer signed in by phone. Every /guest query is scoped by it. */
+  customerId?: string;
 }
 
 export interface AccessTokenClaims {
-  typ: 'staff' | 'guest' | 'public';
+  typ: 'staff' | 'guest' | 'customer' | 'public';
   sub?: string;
   role?: Role;
   ver?: number;

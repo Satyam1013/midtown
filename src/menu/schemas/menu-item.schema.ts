@@ -30,5 +30,9 @@ export class MenuItem {
 export type MenuItemDocument = HydratedDocument<MenuItem>;
 export const MenuItemSchema = buildSchema(MenuItem);
 
-MenuItemSchema.index({ name: 1 }, { unique: true, partialFilterExpression: LIVE });
-MenuItemSchema.index({ category: 1, name: 1 });
+// One name per category, ignoring case. Replaces the old menu-wide `name_1`,
+// which MenuModule drops at startup.
+MenuItemSchema.index(
+  { category: 1, name: 1 },
+  { unique: true, name: 'menu_name_per_category', collation: { locale: 'en', strength: 2 }, partialFilterExpression: LIVE },
+);

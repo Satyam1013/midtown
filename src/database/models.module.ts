@@ -6,6 +6,7 @@ import { OtpChallenge, OtpChallengeSchema } from '../auth/schemas/otp-challenge.
 import { Booking, BookingSchema } from '../bookings/schemas/booking.schema';
 import { CustomerDocument, CustomerDocumentSchema } from '../customers/schemas/customer-document.schema';
 import { Customer, CustomerSchema } from '../customers/schemas/customer.schema';
+import { CustomerCreditEntry, CustomerCreditEntrySchema } from '../customers/schemas/customer-credit-entry.schema';
 import { StayGuest, StayGuestSchema } from '../stays/schemas/stay-guest.schema';
 import { CashTxn, CashTxnSchema } from '../cash-transactions/schemas/cash-txn.schema';
 import { DayBook, DayBookSchema } from '../daybook/schemas/day-book.schema';
@@ -19,12 +20,14 @@ import { MenuItem, MenuItemSchema } from '../menu/schemas/menu-item.schema';
 import { OnlineOrder, OnlineOrderSchema } from '../online-orders/schemas/online-order.schema';
 import { RoomType, RoomTypeSchema } from '../room-types/schemas/room-type.schema';
 import { RoomMaintenance, RoomMaintenanceSchema } from '../rooms/schemas/room-maintenance.schema';
+import { RoomImage, RoomImageSchema } from '../rooms/schemas/room-image.schema';
 import { Room, RoomSchema } from '../rooms/schemas/room.schema';
 import { ServiceRequest, ServiceRequestSchema } from '../service-requests/schemas/service-request.schema';
 import { Staff, StaffSchema } from '../staff/schemas/staff.schema';
 import { RoomShift, RoomShiftSchema } from '../stays/schemas/room-shift.schema';
 import { Stay, StaySchema } from '../stays/schemas/stay.schema';
 import { BillPrint, BillPrintSchema } from '../stays/schemas/bill-print.schema';
+import { Settlement, SettlementSchema } from '../stays/schemas/settlement.schema';
 import { StockItem, StockItemSchema } from '../stock/schemas/stock-item.schema';
 import { StockMovement, StockMovementSchema } from '../stock/schemas/stock-movement.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
@@ -36,6 +39,7 @@ const models = MongooseModule.forFeature([
   { name: Attendance.name, schema: AttendanceSchema },
   { name: AuditLog.name, schema: AuditLogSchema },
   { name: Customer.name, schema: CustomerSchema },
+  { name: CustomerCreditEntry.name, schema: CustomerCreditEntrySchema },
   { name: CustomerDocument.name, schema: CustomerDocumentSchema },
   { name: StayGuest.name, schema: StayGuestSchema },
   { name: RoomShift.name, schema: RoomShiftSchema },
@@ -54,10 +58,12 @@ const models = MongooseModule.forFeature([
   { name: RoomType.name, schema: RoomTypeSchema },
   { name: Room.name, schema: RoomSchema },
   { name: RoomMaintenance.name, schema: RoomMaintenanceSchema },
+  { name: RoomImage.name, schema: RoomImageSchema },
   { name: ServiceRequest.name, schema: ServiceRequestSchema },
   { name: Staff.name, schema: StaffSchema },
   { name: Stay.name, schema: StaySchema },
   { name: BillPrint.name, schema: BillPrintSchema },
+  { name: Settlement.name, schema: SettlementSchema },
   { name: StockItem.name, schema: StockItemSchema },
   { name: StockMovement.name, schema: StockMovementSchema },
   { name: User.name, schema: UserSchema },

@@ -2,6 +2,9 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import { IsEmail, IsEnum, IsIn, IsInt, IsMongoId, IsOptional, IsString, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { DocumentType } from '../schemas/customer-document.schema';
+import { CreditKind } from '../schemas/customer-credit-entry.schema';
+import { IsBusinessDate, IsClockTime, IsDecimal } from '../../common/dto/common.dto';
+import { PaymentMode } from '../../common/enums';
 
 export class LookupQueryDto {
   @ApiProperty({ type: String })
@@ -26,6 +29,11 @@ export class CustomerListQueryDto {
   @ApiPropertyOptional({ enum: ['repeat', 'nodoc', 'all'] })
   @IsOptional() @IsIn(['repeat', 'nodoc', 'all'])
   filter?: 'repeat' | 'nodoc' | 'all';
+
+  /** true: only customers who owe money. */
+  @ApiPropertyOptional({ type: String, enum: ['true', 'false'] })
+  @IsOptional() @IsIn(['true', 'false'])
+  hasCredit?: 'true' | 'false';
 }
 
 export class UpdateCustomerDto {
@@ -66,4 +74,32 @@ export class SignedLinkQueryDto {
   @IsString() exp: string;
   @IsString() u: string;
   @IsString() sig: string;
+}
+
+export class CreditEntryDto {
+  @ApiProperty({ enum: CreditKind })
+  @IsEnum(CreditKind)
+  kind: CreditKind;
+
+  @ApiProperty({ type: String })
+  @IsDecimal({ positive: true })
+  amount: string;
+
+  /** PAYMENT only. */
+  @ApiPropertyOptional({ enum: PaymentMode })
+  @IsOptional() @IsEnum(PaymentMode)
+  mode?: PaymentMode;
+
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @MaxLength(300)
+  narration?: string;
+
+  /** CHARGE: the date it's for (default: the open day). PAYMENT: ignored, the open business day is used. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsBusinessDate()
+  businessDate?: string;
+
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsClockTime()
+  time?: string;
 }

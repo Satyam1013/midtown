@@ -13,6 +13,10 @@ export class OtpChallenge {
   phone: string | null;
 
   /** HMAC of the code; the code itself is never stored. */
+  /** GUEST_LOGIN (guest app sign-in) or PUBLIC_BOOKING; kept apart so one never consumes the other. */
+  @Prop({ type: String, enum: ['GUEST_LOGIN', 'PUBLIC_BOOKING'], default: 'PUBLIC_BOOKING' })
+  purpose: 'GUEST_LOGIN' | 'PUBLIC_BOOKING';
+
   @Prop({ required: true, select: false })
   codeHash: string;
 

@@ -6,6 +6,7 @@ import { KotsModule } from '../kots/kots.module';
 import { BookingsModule } from '../bookings/bookings.module';
 import { ServiceRequestsModule } from '../service-requests/service-requests.module';
 import { GuestController } from './guest.controller';
+import { GuestService } from './guest.service';
 
-@Module({ imports: [FolioModule, MenuModule, RoomTypesModule, KotsModule, BookingsModule, ServiceRequestsModule], controllers: [GuestController] })
+@Module({ imports: [FolioModule, MenuModule, RoomTypesModule, KotsModule, BookingsModule, ServiceRequestsModule], controllers: [GuestController], providers: [GuestService] })
 export class GuestModule {}

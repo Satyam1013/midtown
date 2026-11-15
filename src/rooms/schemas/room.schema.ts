@@ -76,6 +76,27 @@ export class Room {
   @Prop({ type: String, trim: true, default: '' })
   description: string;
 
+  /** Guest-facing details. Empty / null when not set. */
+  @Prop({ type: String, trim: true, default: '' })
+  beds: string;
+
+  @Prop({ type: String, trim: true, default: '' })
+  blurb: string;
+
+  @Prop({ type: String, trim: true, default: '' })
+  size: string;
+
+  @Prop({ type: Number, default: null, min: 0 })
+  sizeSqft: number | null;
+
+  /** Most guests the room takes; null keeps the old limit of 4. */
+  @Prop({ type: Number, default: null, min: 1, max: 10 })
+  sleeps: number | null;
+
+  /** Per extra guest (beyond 2) per night; null uses the hotel default of ₹300, 0 makes extras free. */
+  @Prop(money({ required: false, default: null }))
+  additionalGuestPrice: Types.Decimal128 | null;
+
   /** Set while status is MAINTENANCE, cleared on any other status. */
   @Prop({ type: String, default: null })
   maintenanceReason: string | null;

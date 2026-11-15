@@ -198,6 +198,179 @@ All additive: existing calls keep working.
 - `GET /stays/:id/bill-prints` (OWNER, MANAGER) lists them.
 - The report `GET /reports/manual-bills?date=` lists manual bills printed that day.
 
+## Guest app: one customer, many bookings
+
+**Sign-in**
+- `POST /auth/guest/request-otp` takes `{ phone }`. A `roomNumber` is accepted and ignored.
+- `POST /auth/guest/verify-otp` takes `{ phone, otp }` and returns `{ accessToken, customer: { id, name, phone } }`. Any phone can sign in.
+- Rate limits: `429 OTP_TOO_SOON` within 30 s of the last OTP, `429 TOO_MANY_REQUESTS` after 5 OTPs in 15 minutes.
+- The token lasts 180 days and survives check-out. A bad token returns `401`.
+
+**Endpoints** (customer token)
+- `GET /guest/me`
+- `GET /guest/bookings` returns `{ bookings: [...] }`, newest first. Each booking has `rooms[]`.
+  - Rooms the desk hasn't assigned yet have `stayId: null` and `roomNumber: null`.
+  - Each booking also has `billNos[]`.
+- `GET /guest/bookings/:id/folio` returns lines with `roomNumber`. Another customer's booking returns `404`.
+- `POST /guest/bookings` creates a booking with no OTP. It returns `{ booking: { id, ref, status, amount } }`.
+- `POST /guest/orders` takes `{ stayId, items, billTo, note }` and returns `{ kot, roomNumber }`. `GET /guest/orders` gives each order a `roomNumber`.
+- `POST /guest/service-requests` takes `{ key, note, stayIds }`. One request is made per room, with a shared batch.
+  - Returns one row: `{ id (batch), key, label, status, note, remark, createdAt, rooms: [{ requestId, stayId, roomNumber, status }] }`.
+  - The row's `status` is the room status if all rooms match, else the least finished one (SENT before IN_PROGRESS before DONE).
+- `POST /guest/checkout-request` takes `{ note, stayIds }` and returns the same row shape.
+- `POST /guest/feedback` takes `{ rating, text, bookingId }`.
+- Errors:
+  - `400 INVALID_STAY`: a room that isn't yours.
+  - `400 STAY_NOT_ACTIVE`: a room that isn't checked in.
+  - `400 STAY_REQUIRED`: an empty list.
+  - `400 BOOKING_NOT_STAYED`: feedback before check-in.
+- Removed: `GET /guest/stay` and `GET /guest/folio`.
+- A visitor (public) token can no longer `POST /guest/bookings`; visitors use `POST /public/bookings` with an OTP.
+
+## Room photos, menu/stock/staff creation, customer credit, expenses on credit (manager app)
+
+**Photos**
+- Room photos: `POST /rooms/:id/images` (multipart, field `file`) returns `{ id, url, sortOrder }`. `DELETE /rooms/:id/images/:imageId` removes one.
+- Menu photo: `POST /menu/:id/photo` (multipart, field `file`) returns the item with `photoUrl`.
+- Rules for both: JPG, PNG or WEBP, at most 5 MB. The real file content is checked. Errors: `400 UNSUPPORTED_FILE`, `413`.
+- `GET /rooms` and the new `GET /rooms/:id` include `images: [{ id, url }]`.
+- A `url` is a path (`/api/v1/files/images/…`): put the API origin in front. It's public, needs no token, and doesn't expire.
+
+**Menu, stock, staff**
+- `POST /menu` (OWNER, MANAGER) takes `{ name, description, price, category, isVeg, available }`. A name already in that category, ignoring case, returns `409 MENU_ITEM_EXISTS`.
+- `POST /stock` takes `{ item, category, unit, qty, minQty, rate }`. An opening quantity is recorded as an "Opening stock" movement. A duplicate name, ignoring case, returns `409 STOCK_ITEM_EXISTS`.
+- `POST /staff` (OWNER, MANAGER) takes `{ name, role, shift, phone, salary }`. `GET /staff` includes `phone`.
+
+**Customer credit (udhaar)**
+- `POST /customers/:id/credit` takes one of:
+  - `{ kind: "CHARGE", amount, narration, businessDate, time }`: no money moves, and no open day is needed.
+  - `{ kind: "PAYMENT", amount, mode, narration, time }`: needs an open day. It posts a receipt (`source: CUSTOMER_CREDIT`) on the open day.
+- It returns `{ entry, creditBalance, receipt }`.
+- Errors: `409 CREDIT_EXCEEDED` (more than is owed), `400 MODE_REQUIRED`.
+- `GET /customers` items include `creditBalance`. `GET /customers?hasCredit=true` lists only customers who owe money.
+- `GET /customers/:id` adds `creditBalance` and `creditEntries[]`, newest first.
+- `POST /stays/:id/checkout` takes `creditAmount` to move unpaid money onto the customer's credit. The bill shows it under payment mode `CREDIT`. More than is unpaid returns `400 CREDIT_TOO_HIGH`.
+
+**Expenses on credit (udhari)**
+- `POST /expenses` with `{ onCredit: true, vendor, dueDate, head, amount, time, narration }` and no `mode`. No money moves.
+  - Errors: `400 VENDOR_REQUIRED`, `400 MODE_NOT_ALLOWED`. A normal (cash) expense still needs `mode`.
+- In `GET /daybook/register`, a credit expense line has `informational: true`. **Leave it out of totals**; the day-book figures already do.
+- `POST /expenses/:id/payments` takes `{ amount, mode, time, narration }` and needs an open day. It posts a DEBIT entry (`source: EXPENSE_PAYMENT`). More than is due returns `400 PAYMENT_TOO_HIGH`.
+- `GET /expenses?status=DUE` lists every credit expense with money still due, across dates, for the Payables screen.
+- Expenses now include `onCredit`, `paidAmount`, `dueAmount`, `dueDate` and `payments[]`.
+
+**Reports:** `receivables` and `payables`, with ageing (0-30, 31-60, 61-90, 90+ days). Payables also shows overdue amounts and the next due date.
+
+## One register row per check-out (manager app)
+
+**Check-out is one call:** `POST /stays/:id/checkout` with:
+```
+{ time, narration,
+  payments: [{ mode, amount }],
+  adjustments: [{ kind, value, section, amount, reason }],
+  creditAmount }
+```
+- **Idempotency:** send an `Idempotency-Key` header. A retry or double tap returns the first result and posts nothing twice.
+- **Adjustments:**
+  - `kind` is `DISCOUNT`, `COMPLIMENTARY` (both reduce the bill) or `HALF_DAY` (adds to the stay).
+  - `section` is `STAY`, `FOOD` or `OTHER`.
+  - `amount` is the change to the bill, GST included. GST follows the section's rate.
+  - More off than the section's charges returns `400 ADJUSTMENT_TOO_HIGH`.
+- **Response:** includes `settlement`, the register-row shape below.
+- **Older apps:** `PATCH /stays/:id { payment }` just before check-out still works. Payments made in the two minutes before check-out join that check-out's row.
+
+**Register row for a check-out** (in `GET /daybook/register`, `GET /entries`, customer `payments` and the daily and day-book reports):
+```
+{ id (settlement), kind: "entry", source: "CHECKOUT", type: "Check-out",
+  time, roomNumber, guestName, phone, vehicle, stayId, customerId,
+  mode: "CASH" | "MIXED" | null, dc: "CREDIT",
+  amount (collected), billTotal, shortfall (null when fully paid), creditAmount,
+  narration (what the user typed), payments: [{ mode, amount }] }
+```
+- There's no separate payment row and no zero-amount row any more. Build the "short by" text from `shortfall`.
+- `GET /daybook` adds `checkoutShortfall` and `checkoutsShort`.
+- Totals don't change: the per-mode ledger rows are still posted and used for the cash, UPI, card and bank totals and for expected cash.
+
+## Occupancy pricing by room type (guest and manager apps)
+
+**Room types** (in `GET /public/room-types`, `GET /guest/room-types` and `GET /room-types`)
+- New fields `singleRate`, `doubleRate`, `additionalGuestRate`, all per night with GST excluded. They're numbers, and `tariff` equals `singleRate`.
+- Types not priced yet return `null` rates, and booking them returns `409 NO_PRICE`.
+- `POST /room-types` (OWNER) takes `{ name, category, sleeps (1-4), singleRate, doubleRate, additionalGuestRate, beds, size, blurb, perks, sortOrder }`.
+- `PATCH /room-types/:id` (OWNER) takes any of the same fields. `tariff` is still accepted as the older name for `singleRate`.
+- Rules: `doubleRate` must be at least `singleRate` (`400 INVALID_RATES`), and `additionalGuestRate` must be 0 or more.
+
+**Pricing:** every booking is priced on the server.
+- Guests are split evenly across rooms, earlier rooms first: 5 guests in 2 rooms is 3 + 2.
+- Per room, per night: 1 guest pays `singleRate`, 2 pay `doubleRate`, and 3 or more pay `doubleRate + (guests − 2) × additionalGuestRate`.
+- Errors: `400 TOO_FEW_GUESTS` (a room with no guest), `400 TOO_MANY_GUESTS` (more than rooms × sleeps).
+- Front-desk `amount` is ignored, except for OTA sources (MakeMyTrip, Booking.com, Goibibo, Agoda, Airbnb), where it's required and kept.
+- Bookings store `roomLines: [{ guests, rate }]`. In the guest app this is `booking.rooms[].guests` and `rooms[].rate`.
+- At check-in against a booking, the booked rate is charged, even if the tariff changed since. If the desk changes the guest count, the booking's own price card is used.
+
+**Quote:** `POST /public/bookings/quote` (no token) and `POST /guest/bookings/quote`.
+- Body: `{ roomTypeId, rooms, pax, arrivalDate, departureDate }`.
+- Returns `{ nights, perRoom: [{ guests, ratePerNight }], amount, gstIncluded: false }`.
+- It uses the same calculation as the booking.
+
+**GST:** all these rates and amounts exclude GST. GST is added at check-in on the folio: 5% for rooms up to ₹7,500 a night, 18% above. The bill (`GET /stays/:id/bill`) shows CGST and SGST separately.
+
+## Room details and per-room extra-guest price (manager and guest apps)
+
+**Room fields:** `POST /rooms` and `PATCH /rooms/:id` take `beds`, `blurb`, `size`, `sizeSqft`, `sleeps` and `additionalGuestPrice`.
+- On `PATCH`, a missing field is left unchanged, and `null` or `""` clears it.
+- `GET /rooms` and `GET /rooms/:id` return all six fields.
+- Validation:
+  - `sizeSqft`: null or more than 0.
+  - `sleeps`: null or a whole number from 1 to 10.
+  - `additionalGuestPrice`: null or 0 or more (a number or a string).
+  - `blurb`: at most 500 characters. `beds` and `size`: at most 80.
+
+**Pricing per room** (check-in, adding a guest, room shift):
+- 1 guest pays the single rate. 2 or more pay the double rate, plus `(guests − 2) × (room.additionalGuestPrice ?? 300)`.
+- A shift uses the **target** room's price and capacity.
+- A rate sent by the app is ignored; the server's figure is used.
+- Running stays keep their rate. A change to a room's price affects only future check-ins and future added guests.
+
+**Capacity:** a room takes at most `sleeps` guests, or 4 when `sleeps` isn't set.
+- Too many guests returns `400 TOO_MANY_GUESTS`, "Room 106 sleeps at most 3 guests".
+- When adding a guest, it returns `409 GUEST_LIMIT` with the same message.
+
+**Guest room types:** `GET /guest/room-types` and `GET /public/room-types` also return `additionalGuestPrice`, the same value as `additionalGuestRate`. `beds`, `blurb`, `size`, `sizeSqft` and `sleeps` were already there.
+
+**Bookings** are by room type, since no room is chosen yet, so they use the room type's prices. At check-in, the booked rate is charged.
+
+## Bookings with a line per room (guest, public and desk)
+
+**Request:** `POST /guest/bookings`, `POST /public/bookings` (plus `otp`) and `POST /bookings` take:
+```
+{ guestName, phone, arrivalDate, departureDate, note, pax,
+  rooms: [{ roomTypeId, guests }, ...] }
+```
+- Room types can be mixed in one booking.
+- The older shape (`roomTypeId`, `rooms` as a number, `pax`) is still accepted. Guests are then split evenly, earlier rooms first.
+
+**Validation**
+- `400 BULK_BOOKING` for more than 10 rooms: "For bulk booking, please contact the front desk."
+- `400 TOO_MANY_GUESTS`: "AC Standard sleeps 4 — max 4 guests per room".
+- `400 PAX_MISMATCH` when `pax` isn't the sum of guests.
+- `400 TOO_FEW_GUESTS` for an empty room.
+- `409 NO_PRICE` for an unpriced room type, and `409 NO_ROOMS_AVAILABLE` for more rooms of a type than can be sold.
+- Arrival can't be in the past, and the stay must be 1–30 nights. The front desk has no 30-night limit.
+- Errors use the usual `{ statusCode, code, message }`.
+
+**Pricing per line, per night:** 1 guest pays `singleRate`, 2 pay `doubleRate`, and 3 or more pay `doubleRate + (guests − 2) × additionalGuestRate`. The amount is the sum × nights, with GST excluded.
+
+**Response**
+```
+{ booking: { id, ref, status, amount, nights,
+  rooms: [{ lineId, stayId: null, roomTypeId, roomType, guests, rate }] } }
+```
+- `stayId` is null until the desk checks a room in. Check-in takes the booking's next free line of that room's type, else any free line, and charges its stored rate.
+- `GET /guest/bookings` lists checked-in rooms with their `stayId`, and the rest with `stayId: null` and their `lineId`.
+
+**Quote:** `POST /public/bookings/quote` and `POST /guest/bookings/quote` take `{ rooms: [{ roomTypeId, guests }], arrivalDate, departureDate }`. They return `{ nights, rooms: [{ roomTypeId, roomType, guests, ratePerNight }], amount }`; `perRoom` is the same list under its older name.
+
 ## Behaviour to expect
 
 - **Duplicate rule on stay payments:** a second payment of the same type and amount for the same guest, room and date returns `409 DUPLICATE_ENTRY` with `entryId`. This is the client's rule. Change the amount or edit the existing entry.

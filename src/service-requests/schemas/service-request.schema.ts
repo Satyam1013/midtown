@@ -43,6 +43,10 @@ export class ServiceRequest {
   @Prop({ type: String, enum: Object.values(ServiceRequestStatus), default: ServiceRequestStatus.SENT })
   status: ServiceRequestStatus;
 
+  /** Shared by the per-room requests a guest sent together, so the app shows them as one. */
+  @Prop({ type: Types.ObjectId, default: null })
+  batchId: Types.ObjectId | null;
+
   /** Charge for the service (laundry, taxi …), set once. */
   @Prop(money({ required: false, default: null }))
   chargeAmount: Types.Decimal128 | null;
@@ -68,6 +72,7 @@ export class ServiceRequest {
 export type ServiceRequestDocument = HydratedDocument<ServiceRequest>;
 export const ServiceRequestSchema = buildSchema(ServiceRequest);
 
+ServiceRequestSchema.index({ batchId: 1 });
 ServiceRequestSchema.index({ stayId: 1, createdAt: -1 });
 ServiceRequestSchema.index({ status: 1, createdAt: 1 });
 ServiceRequestSchema.index({ stayId: 1, key: 1, status: 1 });

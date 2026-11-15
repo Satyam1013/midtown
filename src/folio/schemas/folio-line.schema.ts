@@ -8,6 +8,10 @@ export enum FolioSource {
   PAYMENT = 'PAYMENT',
   REFUND = 'REFUND',
   OTHER = 'OTHER',
+  /** Unpaid balance moved to the customer's credit at check-out (negative, like a payment). */
+  CREDIT = 'CREDIT',
+  /** A check-out adjustment (discount, half day, complimentary); `section` says which part of the bill. */
+  ADJUSTMENT = 'ADJUSTMENT',
 }
 
 @Schema({ collection: 'folio_lines', timestamps: true })
@@ -32,6 +36,10 @@ export class FolioLine {
   /** KOT billed to the room (FOOD lines). */
   @Prop(ref('Kot', { required: false }))
   kotId: Types.ObjectId | null;
+
+  /** ADJUSTMENT lines: the bill section they change. */
+  @Prop({ type: String, enum: ['STAY', 'FOOD', 'OTHER', null], default: null })
+  section: 'STAY' | 'FOOD' | 'OTHER' | null;
 
   /** GST breakup of `amount` (a charge line). Null on lines from before breakups. */
   @Prop({ type: Number, default: null })

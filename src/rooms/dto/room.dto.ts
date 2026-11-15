@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ArrayMaxSize, IsArray, IsEnum, IsIn, IsInt, IsMongoId, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { ArrayMaxSize, IsArray, IsEnum, IsIn, IsInt, IsMongoId, IsNotEmpty, IsOptional, IsString, MaxLength, Min, IsNumber, IsPositive, Max, ValidateIf } from 'class-validator';
 import { IsBusinessDate, IsDecimal } from '../../common/dto/common.dto';
 import { ROOM_FEATURES, RoomCategory, RoomFeature, RoomStatus } from '../schemas/room.schema';
 
@@ -45,6 +46,32 @@ export class CreateRoomDto {
   @ApiPropertyOptional({ type: String })
   @IsOptional() @IsString() @MaxLength(1000)
   description?: string;
+
+  // Guest-facing details. On PATCH, a missing field is left as it is; null or "" clears it.
+  @ApiPropertyOptional({ type: String, nullable: true })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(80)
+  beds?: string | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(500)
+  blurb?: string | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(80)
+  size?: string | null;
+
+  @ApiPropertyOptional({ type: Number, nullable: true })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsNumber() @IsPositive()
+  sizeSqft?: number | null;
+
+  @ApiPropertyOptional({ type: Number, nullable: true, description: '1-10; null keeps the default of 4' })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsInt() @Min(1) @Max(10)
+  sleeps?: number | null;
+
+  /** Per extra guest per night; null uses ₹300, 0 makes extra guests free. Numbers and strings both accepted. */
+  @ApiPropertyOptional({ type: String, nullable: true })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @Transform(({ value }) => (typeof value === 'number' ? String(value) : value)) @IsDecimal({ min: '0' })
+  additionalGuestPrice?: string | null;
 }
 
 export class UpdateRoomDto {
@@ -69,6 +96,32 @@ export class UpdateRoomDto {
   @ApiPropertyOptional({ type: String })
   @IsOptional() @IsString() @MaxLength(1000)
   description?: string;
+
+  // Guest-facing details. On PATCH, a missing field is left as it is; null or "" clears it.
+  @ApiPropertyOptional({ type: String, nullable: true })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(80)
+  beds?: string | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(500)
+  blurb?: string | null;
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsString() @MaxLength(80)
+  size?: string | null;
+
+  @ApiPropertyOptional({ type: Number, nullable: true })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsNumber() @IsPositive()
+  sizeSqft?: number | null;
+
+  @ApiPropertyOptional({ type: Number, nullable: true, description: '1-10; null keeps the default of 4' })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @IsInt() @Min(1) @Max(10)
+  sleeps?: number | null;
+
+  /** Per extra guest per night; null uses ₹300, 0 makes extra guests free. Numbers and strings both accepted. */
+  @ApiPropertyOptional({ type: String, nullable: true })
+  @IsOptional() @ValidateIf((_, v) => v !== null) @Transform(({ value }) => (typeof value === 'number' ? String(value) : value)) @IsDecimal({ min: '0' })
+  additionalGuestPrice?: string | null;
 
   @ApiPropertyOptional({ enum: RoomCategory })
   @IsOptional() @IsEnum(RoomCategory)

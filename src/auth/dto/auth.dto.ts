@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString, Length, Matches, MaxLength } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsNotEmpty, IsOptional, IsString, Length, Matches, MaxLength } from 'class-validator';
 
 export class StaffLoginDto {
   @IsString() @IsNotEmpty() @MaxLength(120)
@@ -18,9 +18,10 @@ export class RefreshDto {
 }
 
 export class RequestOtpDto {
-  @IsString() @IsNotEmpty() @MaxLength(10)
-  @ApiProperty({ type: String })
-  roomNumber: string;
+  /** No longer used: sign-in is by phone alone. Accepted and ignored for older app builds. */
+  @IsOptional() @IsString() @MaxLength(10)
+  @ApiPropertyOptional({ type: String })
+  roomNumber?: string;
 
   @IsString() @IsNotEmpty() @MaxLength(20)
   @ApiProperty({ type: String })

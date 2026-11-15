@@ -24,6 +24,8 @@ const ORIGIN: Record<EntrySource, string> = {
   ONLINE: 'an online order',
   REQUEST: 'a service request charge',
   REFUND: 'a refund (Edit stay)',
+  CUSTOMER_CREDIT: 'a customer credit payment',
+  EXPENSE_PAYMENT: 'a payment against a credit expense',
   OTHER: 'another module',
 };
 
@@ -39,9 +41,15 @@ export class EntriesService {
     private readonly events: EventsService,
   ) {}
 
+  /** The day's entries, with each check-out as one line (its per-mode rows are in `payments`). */
   async list(date: string) {
-    const rows = await this.entries.find({ businessDate: date }).sort({ time: 1, createdAt: 1 }).lean();
-    return rows.map((e) => ({ ...e, source: sourceOf(e), shortfall: e.shortfall ?? null }));
+    const [rows, settled] = await Promise.all([
+      this.entries.find({ businessDate: date, settlementId: null }).sort({ time: 1, createdAt: 1 }).lean(),
+      this.daybook.settlementRows(date),
+    ]);
+    return [...rows.map((e) => ({ ...e, source: sourceOf(e), shortfall: e.shortfall ?? null })), ...settled].sort((a: any, b: any) =>
+      (a.time || '').localeCompare(b.time || ''),
+    );
   }
 
   /** A manual register line, always on the open business day; any businessDate sent is ignored. */

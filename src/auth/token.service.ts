@@ -1,3 +1,4 @@
+import { Customer } from '../customers/schemas/customer.schema';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -6,10 +7,11 @@ import { Model } from 'mongoose';
 import { Role } from '../common/enums';
 import { unauthorized } from '../common/errors';
 import { AccessTokenClaims, Principal } from '../common/interfaces/principal';
-import { Stay, StayStatus } from '../stays/schemas/stay.schema';
+import { Stay } from '../stays/schemas/stay.schema';
 import { User } from '../users/schemas/user.schema';
 
-const GUEST_TOKEN_TTL = '30d'; // the guest app has no refresh; check-out ends it sooner
+// The guest app has no refresh and a customer outlives any stay, so the token lasts until sign-out.
+const GUEST_TOKEN_TTL = '180d';
 const PUBLIC_TOKEN_TTL = '12h';
 
 @Injectable()
@@ -19,6 +21,7 @@ export class TokenService {
     private readonly config: ConfigService,
     @InjectModel(User.name) private readonly users: Model<User>,
     @InjectModel(Stay.name) private readonly stays: Model<Stay>,
+    @InjectModel(Customer.name) private readonly customers: Model<Customer>,
   ) {}
 
   signAccess(user: { _id: unknown; role: Role; tokenVersion?: number }) {
@@ -35,8 +38,8 @@ export class TokenService {
     );
   }
 
-  signGuest(stayId: string) {
-    return this.jwt.signAsync({ typ: 'guest', stayId } satisfies AccessTokenClaims, {
+  signCustomer(customerId: string) {
+    return this.jwt.signAsync({ typ: 'customer', sub: customerId } satisfies AccessTokenClaims, {
       secret: this.accessSecret,
       expiresIn: GUEST_TOKEN_TTL,
     });
@@ -79,10 +82,16 @@ export class TokenService {
       }
       return { role: user.role, userId: String(user._id) };
     }
+    if (claims.typ === 'customer' && claims.sub) {
+      // A merged or removed customer is signed out at once.
+      if (!(await this.customers.exists({ _id: claims.sub }))) throw unauthorized('INVALID_TOKEN', 'Please sign in again');
+      return { role: Role.GUEST, customerId: claims.sub };
+    }
     if (claims.typ === 'guest' && claims.stayId) {
-      const live = await this.stays.exists({ _id: claims.stayId, status: StayStatus.IN_HOUSE });
-      if (!live) throw unauthorized('STAY_ENDED', 'This stay has ended');
-      return { role: Role.GUEST, stayId: claims.stayId };
+      // Room-number tokens from before phone login: honoured as the stay's customer.
+      const stay = await this.stays.findById(claims.stayId).select('customerId').lean();
+      if (!stay?.customerId) throw unauthorized('INVALID_TOKEN', 'Please sign in again');
+      return { role: Role.GUEST, customerId: String(stay.customerId) };
     }
     if (claims.typ === 'public') return { role: Role.VISITOR };
     throw unauthorized('INVALID_TOKEN', 'Invalid or expired token');

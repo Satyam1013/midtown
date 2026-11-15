@@ -3,6 +3,7 @@ import { Server } from 'socket.io';
 
 export const HOTEL_ROOM = 'hotel';
 export const stayRoom = (stayId: unknown) => `stay:${String(stayId)}`;
+export const customerRoom = (customerId: unknown) => `customer:${String(customerId)}`;
 
 export type HotelEvent =
   | 'kot.created'
@@ -37,8 +38,8 @@ export class EventsService {
     this.server?.to([HOTEL_ROOM, stayRoom(stayId)]).emit(event, payload);
   }
 
-  /** The stay has ended: drop the guest's open sockets. */
+  /** The stay has ended: its sockets stop hearing about it (the customer stays connected). */
   endStay(stayId: unknown) {
-    this.server?.in(stayRoom(stayId)).disconnectSockets(true);
+    this.server?.in(stayRoom(stayId)).socketsLeave(stayRoom(stayId));
   }
 }

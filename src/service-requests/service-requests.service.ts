@@ -65,24 +65,24 @@ export class ServiceRequestsService {
     return this.requests.find({ stayId }).sort({ createdAt: -1 }).lean();
   }
 
-  async create(stayId: Types.ObjectId, key: ServiceRequestKey, note?: string) {
+  async create(stayId: Types.ObjectId, key: ServiceRequestKey, note?: string, batchId: Types.ObjectId | null = null) {
     if (key === ServiceRequestKey.ROOM_SHIFT) {
       const open = await this.requests.exists({ stayId, key, status: { $nin: CLOSED_REQUEST_STATUSES } });
       if (open) throw conflict('SHIFT_REQUEST_OPEN', 'A room shift request is already open for this stay');
     }
-    const request = await this.requests.create({ stayId, key, label: LABELS[key], note: note ?? '' });
+    const request = await this.requests.create({ stayId, key, label: LABELS[key], note: note ?? '', batchId });
     this.events.toHotelAndStay('service-request.created', stayId, { id: String(request._id), key, status: request.status });
     return request;
   }
 
   /** Asking twice returns the request already open, so the desk sees one. */
-  async requestCheckout(stayId: Types.ObjectId, note?: string) {
+  async requestCheckout(stayId: Types.ObjectId, note?: string, batchId: Types.ObjectId | null = null) {
     const open = await this.requests.findOne({
       stayId,
       key: ServiceRequestKey.checkout,
       status: { $ne: ServiceRequestStatus.DONE },
     });
-    return open ?? this.create(stayId, ServiceRequestKey.checkout, note);
+    return open ?? this.create(stayId, ServiceRequestKey.checkout, note, batchId);
   }
 
   async setStatus(id: Types.ObjectId, status: ServiceRequestStatus, user: Principal, remark?: string) {

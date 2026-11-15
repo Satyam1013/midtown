@@ -42,11 +42,11 @@ export class PublicBookingsService {
     const minutes = this.config.get<number>('OTP_EXPIRY_MINUTES', 5);
     if (this.otpBypassed) return { sent: true, expiresInMinutes: minutes };
 
-    const recent = await this.otps.countDocuments({ phone, createdAt: { $gt: this.windowStart() } });
+    const recent = await this.otps.countDocuments({ phone, purpose: { $ne: 'GUEST_LOGIN' }, createdAt: { $gt: this.windowStart() } });
     if (recent >= MAX_OTPS_PER_WINDOW) throw tooMany('Too many OTP requests for this number, please try again later');
 
     const otp = String(randomInt(100000, 1000000));
-    await this.otps.updateMany({ phone, consumedAt: null }, { $set: { consumedAt: new Date() } });
+    await this.otps.updateMany({ phone, purpose: { $ne: 'GUEST_LOGIN' }, consumedAt: null }, { $set: { consumedAt: new Date() } });
     const challenge = await this.otps.create({
       phone,
       codeHash: this.hash(otp),
@@ -75,17 +75,16 @@ export class PublicBookingsService {
 
     const challengeId = this.otpBypassed ? null : await this.checkOtp(phone, dto.otp);
     const { otp: _otp, ...fields } = dto;
-    const { booking } = await this.bookingsService.createFromGuest(
+    const { booking, priced } = await this.bookingsService.createFromGuest(
       { ...fields, guestName: dto.guestName.trim(), phone },
       // In the booking's transaction: if the booking fails the OTP stays usable,
       // and if the OTP was already used no booking is created.
       challengeId ? (session) => this.consume(challengeId, session) : undefined,
     );
-    return { booking: { id: booking._id, ref: booking.ref, amount: booking.amount, status: booking.status } };
+    return { booking: BookingsService.summary(booking, priced) };
   }
 
   private async assertValid(dto: PublicBookingDto) {
-    if (dto.rooms > MAX_ROOMS) throw badRequest('BULK_BOOKING', 'For bulk booking, please contact the front desk.');
     if (!this.dates.isRealDate(dto.arrivalDate) || !this.dates.isRealDate(dto.departureDate)) {
       throw badRequest('INVALID_DATES', 'Please choose valid dates');
     }
@@ -94,17 +93,14 @@ export class PublicBookingsService {
     if (nights < 1 || nights > MAX_NIGHTS) {
       throw badRequest('INVALID_DATES', `A stay must be between 1 and ${MAX_NIGHTS} nights`);
     }
-    const type = await this.types.findById(dto.roomTypeId).select('sleeps').lean();
-    if (!type) throw notFound('Room type');
-    if (dto.pax > type.sleeps * dto.rooms) {
-      throw badRequest('TOO_MANY_GUESTS', `This booking can hold at most ${type.sleeps * dto.rooms} guests`);
-    }
+    // Rooms, guests per room and room types: priced now so a bad form fails before the OTP is checked.
+    await this.bookingsService.priceLines(dto);
   }
 
   private async checkOtp(phone: string, otp: string) {
     const invalid = badRequest('INVALID_OTP', 'Wrong or expired OTP');
     const challenge = await this.otps
-      .findOne({ phone, consumedAt: null, expiresAt: { $gt: new Date() } })
+      .findOne({ phone, purpose: { $ne: 'GUEST_LOGIN' }, consumedAt: null, expiresAt: { $gt: new Date() } })
       .select('+codeHash')
       .sort({ createdAt: -1 })
       .lean();

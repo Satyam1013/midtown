@@ -36,10 +36,10 @@ const newEntry = async (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-async function guestLogin(room: string, phone: string) {
+async function guestLogin(phone: string) {
   await ctx.model('OtpChallenge').deleteMany({}); // resend cooldown
-  await ctx.api().post(`${V1}/auth/guest/request-otp`).send({ roomNumber: room, phone }).expect(200);
-  const res = await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ roomNumber: room, phone, otp: lastOtp }).expect(200);
+  await ctx.api().post(`${V1}/auth/guest/request-otp`).send({ phone }).expect(200);
+  const res = await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ phone, otp: lastOtp }).expect(200);
   return res.body.data.accessToken as string;
 }
 
@@ -194,7 +194,9 @@ describe('Business day (shift)', () => {
       .send({ payment: { amount: '10000.00', mode: 'CASH', time: '12:00' } }).expect(200)).body.data;
     expect(out.shortfall).toBe(920); // 10920 − 10000
     expect(out.folioBalance).toBe('920.00');
-    expect(out.entry).toMatchObject({ amount: 10000, shortfall: 920, source: 'CHECKOUT' });
+    // The settlement carries the unpaid part; the ledger row is just the payment.
+    expect(out.settlement).toMatchObject({ source: 'CHECKOUT', amount: 10000, billTotal: 10920, shortfall: 920, mode: 'CASH' });
+    expect(out.entry).toMatchObject({ amount: 10000, shortfall: null, source: 'CHECKOUT' });
     const report = (await ctx.api().get(`${V1}/daybook/shortages`).query({ from: ctx.today, to: ctx.today }).set(mgr()).expect(200)).body.data;
     expect(report.entries).toEqual([expect.objectContaining({ guestName: 'Short Payer', roomNumber: '303', shortfall: 920 })]);
   });
@@ -336,52 +338,80 @@ describe('Guest security and orders', () => {
   let guestB: string;
   let stayA: any;
   let stayB: any;
+  const bookingsOf = async (token: string) => (await ctx.api().get(`${V1}/guest/bookings`).set(bearer(token)).expect(200)).body.data.bookings;
+  // Guest A's current (checked-in) booking; newer upcoming bookings sort first.
+  const stayingA = async () => (await bookingsOf(guestA)).find((b: any) => b.status === 'CHECKED_IN');
+  const order = (token: string, stayId: string, item: string, billTo = 'ROOM') =>
+    ctx.menuId(item).then((menuItemId) => ctx.api().post(`${V1}/guest/orders`).set(bearer(token)).send({ stayId, items: [{ menuItemId, qty: 1 }], billTo }));
 
   beforeAll(async () => {
     stayA = await checkIn(ctx, '203', 'Guest A', '9700000001');
     stayB = await checkIn(ctx, '204', 'Guest B', '9700000002');
-    guestA = await guestLogin('203', '9700000001');
-    guestB = await guestLogin('204', '9700000002');
+    guestA = await guestLogin('9700000001');
+    guestB = await guestLogin('9700000002');
   });
 
-  it('wrong phone gets no OTP; an OTP works only once', async () => {
-    await ctx.api().post(`${V1}/auth/guest/request-otp`).send({ roomNumber: '203', phone: '9000000099' }).expect(404);
-    await guestLogin('203', '9700000001');
-    await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ roomNumber: '203', phone: '9700000001', otp: lastOtp }).expect(401);
+  it('sign-in is by phone alone; a new phone gets a customer and no bookings; an OTP works once', async () => {
+    await ctx.model('OtpChallenge').deleteMany({});
+    // Older app builds still send roomNumber: accepted and ignored.
+    await ctx.api().post(`${V1}/auth/guest/request-otp`).send({ phone: '9700000077', roomNumber: '999' }).expect(200);
+    await ctx.api().post(`${V1}/auth/guest/request-otp`).send({ phone: '9700000077' }).expect(429); // resend cooldown
+    const res = await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ phone: '9700000077', otp: lastOtp }).expect(200);
+    const token = res.body.data.accessToken;
+    expect(await bookingsOf(token)).toEqual([]);
+    expect((await ctx.api().get(`${V1}/guest/me`).set(bearer(token)).expect(200)).body.data).toMatchObject({ name: '', phone: '9700000077' });
+    await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ phone: '9700000077', otp: lastOtp }).expect(401);
+    await ctx.api().post(`${V1}/auth/guest/request-otp`).send({ phone: '12345' }).expect(400);
+    await ctx.api().get(`${V1}/guest/bookings`).set(bearer('not-a-token')).expect(401);
   });
 
-  it('bypass mode skips the SMS but still needs a matching room and phone', async () => {
+  it('login and public-booking OTPs are kept apart', async () => {
+    await ctx.model('OtpChallenge').deleteMany({});
+    await ctx.api().post(`${V1}/public/bookings/request-otp`).send({ phone: '9700000078' }).expect(200);
+    const bookingOtp = lastOtp;
+    await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ phone: '9700000078', otp: bookingOtp }).expect(401);
+  });
+
+  it('bypass mode skips the SMS', async () => {
     const config = ctx.app.get(ConfigService);
     const realGet = config.get.bind(config);
     const spy = jest.spyOn(config, 'get').mockImplementation(((key: string, fallback?: unknown) =>
       key === 'OTP_PROVIDER' ? 'bypass' : realGet(key, fallback)) as any);
     const send = ctx.app.get(SmsService).sendOtp as jest.Mock;
     send.mockClear();
-    const creds = { roomNumber: '203', phone: '9700000001' };
-    await ctx.api().post(`${V1}/auth/guest/request-otp`).send(creds).expect(200);
+    await ctx.api().post(`${V1}/auth/guest/request-otp`).send({ phone: '9700000001' }).expect(200);
     expect(send).not.toHaveBeenCalled();
-    const res = await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ ...creds, otp: '000000' }).expect(200);
-    const stay = await ctx.api().get(`${V1}/guest/stay`).set(bearer(res.body.data.accessToken)).expect(200);
-    expect(stay.body.data.stay.id).toBe(stayA.id);
-    await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ ...creds, phone: '9000000099', otp: '000000' }).expect(404);
-    await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ ...creds, otp: '12' }).expect(400);
+    const res = await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ phone: '9700000001', otp: '000000' }).expect(200);
+    expect((await bookingsOf(res.body.data.accessToken))[0].rooms[0].stayId).toBe(stayA.id);
+    await ctx.api().post(`${V1}/auth/guest/verify-otp`).send({ phone: '9700000001', otp: '12' }).expect(400);
     spy.mockRestore();
   });
 
-  it('8. a guest token only ever sees its own folio', async () => {
-    const a = await ctx.api().get(`${V1}/guest/folio`).set(bearer(guestA)).expect(200);
-    const b = await ctx.api().get(`${V1}/guest/folio`).set(bearer(guestB)).expect(200);
-    expect(a.body.data.lines.every((l: any) => l.stayId === stayA.id)).toBe(true);
-    expect(b.body.data.lines.every((l: any) => l.stayId === stayB.id)).toBe(true);
+  it('a walk-in stay shows up as a one-room booking of its customer', async () => {
+    const [booking] = await bookingsOf(guestA);
+    expect(booking).toMatchObject({ status: 'CHECKED_IN', guestName: 'Guest A', phone: '9700000001', nights: 2, invoiceUrl: '' });
+    expect(booking.ref).toMatch(/^WI\d{6}$/);
+    expect(booking.rooms).toEqual([expect.objectContaining({ stayId: stayA.id, roomNumber: '203', roomType: expect.any(String), status: 'CHECKED_IN', guestName: 'Guest A' })]);
+    expect(booking.balance).toBeGreaterThan(0);
   });
 
-  it('9. adding another stay id changes nothing or is rejected', async () => {
-    const res = await ctx.api().get(`${V1}/guest/stay`).query({ stayId: stayB.id }).set(bearer(guestA)).expect(200);
-    expect(res.body.data.stay.id).toBe(stayA.id);
-    const menu = await ctx.model('MenuItem').findOne({ name: 'Masala Chai' }).lean() as any;
-    await ctx.api().post(`${V1}/guest/orders`).set(bearer(guestA))
-      .send({ stayId: stayB.id, items: [{ menuItemId: String(menu._id), qty: 1 }], billTo: 'ROOM' })
-      .expect(400);
+  it('8. a guest only ever sees their own bookings and bills', async () => {
+    const [mine] = await bookingsOf(guestA);
+    const [theirs] = await bookingsOf(guestB);
+    const a = (await ctx.api().get(`${V1}/guest/bookings/${mine.id}/folio`).set(bearer(guestA)).expect(200)).body.data;
+    expect(a.lines.length).toBeGreaterThan(0);
+    expect(a.lines.every((l: any) => l.roomNumber === '203')).toBe(true);
+    await ctx.api().get(`${V1}/guest/bookings/${theirs.id}/folio`).set(bearer(guestA)).expect(404);
+    await ctx.api().get(`${V1}/guest/bookings/not-an-id/folio`).set(bearer(guestA)).expect(404);
+  });
+
+  it('9. another customer\'s room is refused for orders and requests', async () => {
+    expect((await order(guestA, stayB.id, 'Masala Chai')).status).toBe(400);
+    const req = await ctx.api().post(`${V1}/guest/service-requests`).set(bearer(guestA)).send({ key: 'laundry', stayIds: [stayA.id, stayB.id] }).expect(400);
+    expect(req.body.code).toBe('INVALID_STAY');
+    await ctx.api().post(`${V1}/guest/service-requests`).set(bearer(guestA)).send({ key: 'laundry', stayIds: [] }).expect(400);
+    await ctx.api().post(`${V1}/guest/checkout-request`).set(bearer(guestA)).send({ stayIds: [stayB.id] }).expect(400);
+    expect(await ctx.model('ServiceRequest').countDocuments({ stayId: stayB.id })).toBe(0);
   });
 
   it('guests cannot reach manager APIs; KITCHEN cannot reach financial ones', async () => {
@@ -393,34 +423,100 @@ describe('Guest security and orders', () => {
     await ctx.api().get(`${V1}/rooms`).expect(401);
   });
 
-  it('a public token reads menu and room types and can only request a booking', async () => {
+  it('a public token reads menu and room types but has no bookings or bills', async () => {
     const pub = (await ctx.api().post(`${V1}/auth/guest/public-token`).expect(200)).body.data.accessToken;
     await ctx.api().get(`${V1}/guest/menu`).set(bearer(pub)).expect(200);
-    const types = await ctx.api().get(`${V1}/guest/room-types`).set(bearer(pub)).expect(200);
-    await ctx.api().get(`${V1}/guest/stay`).set(bearer(pub)).expect(403);
-    await ctx.api().get(`${V1}/guest/folio`).set(bearer(pub)).expect(403);
-    const arrival = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
-    const departure = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
-    const standard = types.body.data.find((t: any) => t.name === 'Standard');
-    const res = await ctx.api().post(`${V1}/guest/bookings`).set(bearer(pub))
-      .send({ guestName: 'Visitor', phone: '9700000099', roomTypeId: standard.id, rooms: 2, pax: 2, arrivalDate: arrival, departureDate: departure })
-      .expect(201);
-    expect(res.body.data.booking.amount).toBe(7200); // 1800 × 2 nights × 2 rooms, from the database
-    expect(res.body.data.booking.status).toBe('REQUESTED');
+    await ctx.api().get(`${V1}/guest/room-types`).set(bearer(pub)).expect(200);
+    await ctx.api().get(`${V1}/guest/bookings`).set(bearer(pub)).expect(403);
+    await ctx.api().post(`${V1}/guest/bookings`).set(bearer(pub)).send({}).expect(403);
   });
 
-  it('10 and 11. a room-billed order lands on the right folio at server prices and in the kitchen queue', async () => {
-    const before = await ctx.api().get(`${V1}/guest/folio`).set(bearer(guestA)).expect(200);
-    const order = await ctx.api().post(`${V1}/guest/orders`).set(bearer(guestA))
-      .send({ items: [{ menuItemId: await ctx.menuId('Veg Thali'), qty: 2, note: 'less spicy' }], billTo: 'ROOM', note: '' })
+  it('a signed-in customer books without an OTP; a booking for a friend stays theirs', async () => {
+    const types = (await ctx.api().get(`${V1}/guest/room-types`).set(bearer(guestA)).expect(200)).body.data;
+    const standard = types.find((t: any) => t.name === 'Standard');
+    const arrival = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+    const departure = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+    const res = await ctx.api().post(`${V1}/guest/bookings`).set(bearer(guestA))
+      .send({ guestName: 'Friend of A', phone: '9700000055', roomTypeId: standard.id, rooms: 2, pax: 3, arrivalDate: arrival, departureDate: departure, note: 'late arrival' })
       .expect(201);
-    const kot = order.body.data.kot;
-    expect(kot).toMatchObject({ source: 'GUEST_APP', stayId: stayA.id, total: 462, cgst: 11, sgst: 11 }); // 440 + 5%
+    expect(res.body.data.booking).toMatchObject({ status: 'REQUESTED', amount: 7200 }); // 1800 × 2 nights × 2 rooms
+    const upcoming = (await bookingsOf(guestA)).find((b: any) => b.id === res.body.data.booking.id);
+    expect(upcoming).toMatchObject({ status: 'REQUESTED', phone: '9700000055', pax: 3 });
+    expect(upcoming.rooms).toEqual([
+      expect.objectContaining({ stayId: null, roomNumber: null, roomType: 'Standard', status: 'CONFIRMED' }),
+      expect.objectContaining({ stayId: null, roomNumber: null }),
+    ]);
+    expect((await bookingsOf(guestB)).map((b: any) => b.id)).not.toContain(res.body.data.booking.id);
+  });
 
-    const after = await ctx.api().get(`${V1}/guest/folio`).set(bearer(guestA)).expect(200);
-    expect(after.body.data.balance - before.body.data.balance).toBeCloseTo(462);
-    const other = await ctx.api().get(`${V1}/guest/folio`).set(bearer(guestB)).expect(200);
-    expect(other.body.data.lines.map((l: any) => l.kotId)).not.toContain(kot.id);
+  it('a booking made at the desk or by a visitor shows up when that phone signs in', async () => {
+    const types = (await ctx.api().get(`${V1}/guest/room-types`).set(bearer(guestA))).body.data;
+    await ctx.api().post(`${V1}/bookings`).set(staff())
+      .send({ source: 'Walk-in', guestName: 'Desk Booked', phone: '+91 97000 00066', roomTypeId: types[0].id, rooms: 1, pax: 1, arrivalDate: '2027-01-10', departureDate: '2027-01-12', amount: '3600.00' })
+      .expect(201);
+    const token = await guestLogin('9700000066');
+    expect(await bookingsOf(token)).toEqual([expect.objectContaining({ guestName: 'Desk Booked', phone: '9700000066', status: 'CONFIRMED' })]);
+  });
+
+  it('a booking with two rooms: per-room orders and requests; checked out when both rooms are', async () => {
+    const types = (await ctx.api().get(`${V1}/guest/room-types`).set(bearer(guestA))).body.data;
+    const booking = (await ctx.api().post(`${V1}/bookings`).set(staff())
+      .send({ source: 'Walk-in', guestName: 'Family C', phone: '9700000003', roomTypeId: types[0].id, rooms: 2, pax: 4, arrivalDate: ctx.today, departureDate: '2027-12-31', amount: '1000.00' })
+      .expect(201)).body.data;
+    const guestC = await guestLogin('9700000003');
+    const inRoom = async (number: string, name: string) =>
+      (await ctx.api().post(`${V1}/stays`).set(staff()).send({ roomId: await ctx.roomId(number), guestName: name, phone: '9700000003', nights: 2, bookingId: booking.id }).expect(201)).body.data.stay;
+    const c1 = await inRoom('205', 'Ravi');
+    const c2 = await inRoom('206', 'Sita');
+    const [b] = await bookingsOf(guestC);
+    expect(b).toMatchObject({ id: booking.id, status: 'CHECKED_IN' });
+    expect(b.rooms.map((r: any) => [r.roomNumber, r.guestName, r.status])).toEqual([['205', 'Ravi', 'CHECKED_IN'], ['206', 'Sita', 'CHECKED_IN']]);
+
+    const o1 = (await order(guestC, c1.id, 'Masala Chai')).body.data;
+    const o2 = (await order(guestC, c2.id, 'Cold Drink')).body.data;
+    expect([o1.roomNumber, o2.roomNumber]).toEqual(['205', '206']);
+    expect((await ctx.api().get(`${V1}/guest/orders`).set(bearer(guestC)).expect(200)).body.data.map((k: any) => k.roomNumber).sort()).toEqual(['205', '206']);
+    const folio = (await ctx.api().get(`${V1}/guest/bookings/${booking.id}/folio`).set(bearer(guestC)).expect(200)).body.data;
+    expect(folio.lines.filter((l: any) => l.head.startsWith('Food')).map((l: any) => l.roomNumber).sort()).toEqual(['205', '206']);
+
+    const sent = (await ctx.api().post(`${V1}/guest/service-requests`).set(bearer(guestC)).send({ key: 'housekeeping', note: 'towels', stayIds: [c1.id, c2.id] }).expect(201)).body.data;
+    expect(sent).toMatchObject({ key: 'housekeeping', status: 'SENT', note: 'towels' });
+    expect(sent.rooms.map((r: any) => r.roomNumber)).toEqual(['205', '206']);
+    const staffList = (await ctx.api().get(`${V1}/service-requests`).query({ status: 'SENT' }).set(staff())).body.data.filter((r: any) => r.note === 'towels');
+    expect(staffList.map((r: any) => r.roomNumber).sort()).toEqual(['205', '206']);
+    await ctx.api().patch(`${V1}/service-requests/${staffList[0].id}`).set(staff()).send({ status: 'DONE' }).expect(200);
+    const mine = (await ctx.api().get(`${V1}/guest/service-requests`).set(bearer(guestC)).expect(200)).body.data;
+    expect(mine).toEqual([expect.objectContaining({ id: sent.id, status: 'SENT', rooms: expect.arrayContaining([expect.objectContaining({ status: 'DONE' })]) })]);
+    const co = (await ctx.api().post(`${V1}/guest/checkout-request`).set(bearer(guestC)).send({ stayIds: [c1.id, c2.id], note: 'by 11' }).expect(201)).body.data;
+    expect(co.rooms.map((r: any) => r.roomNumber)).toEqual(['205', '206']);
+
+    await ctx.api().post(`${V1}/stays/${c1.id}/checkout`).set(staff()).send({}).expect(200);
+    expect((await bookingsOf(guestC))[0]).toMatchObject({ status: 'CHECKED_IN' });
+    // A checked-out room takes no more orders.
+    expect((await order(guestC, c1.id, 'Masala Chai')).body.code).toBe('STAY_NOT_ACTIVE');
+    await ctx.api().post(`${V1}/stays/${c2.id}/checkout`).set(staff()).send({}).expect(200);
+    const past = (await bookingsOf(guestC))[0];
+    expect(past).toMatchObject({ status: 'CHECKED_OUT', rooms: [expect.objectContaining({ status: 'CHECKED_OUT' }), expect.objectContaining({ status: 'CHECKED_OUT' })] });
+    // Past bills stay readable, and feedback is allowed after check-out.
+    await ctx.api().get(`${V1}/guest/bookings/${booking.id}/folio`).set(bearer(guestC)).expect(200);
+    await ctx.api().post(`${V1}/guest/feedback`).set(bearer(guestC)).send({ rating: 5, text: 'Lovely', bookingId: booking.id }).expect(201);
+    expect(await ctx.api().get(`${V1}/guest/orders`).set(bearer(guestC)).expect(200).then((r) => r.body.data)).toEqual([]);
+    await ctx.model('Room').updateMany({ number: { $in: ['205', '206'] } }, { $set: { status: 'VACANT' } });
+  });
+
+  it('10 and 11. a room-billed order lands on that room\'s folio at server prices and in the kitchen queue', async () => {
+    const booking = await stayingA();
+    const bill = async () => (await ctx.api().get(`${V1}/guest/bookings/${booking.id}/folio`).set(bearer(guestA)).expect(200)).body.data;
+    const before = await bill();
+    const res = await ctx.api().post(`${V1}/guest/orders`).set(bearer(guestA))
+      .send({ stayId: stayA.id, items: [{ menuItemId: await ctx.menuId('Veg Thali'), qty: 2, note: 'less spicy' }], billTo: 'ROOM', note: '' })
+      .expect(201);
+    const kot = res.body.data.kot;
+    expect(res.body.data.roomNumber).toBe('203');
+    expect(kot).toMatchObject({ source: 'GUEST_APP', stayId: stayA.id, total: 462, cgst: 11, sgst: 11 }); // 440 + 5%
+    const after = await bill();
+    expect(after.balance - before.balance).toBeCloseTo(462);
+    expect(after.lines.at(-1)).toMatchObject({ roomNumber: '203', amount: 462 });
 
     const queue = await ctx.api().get(`${V1}/kots`).set(bearer(ctx.token.KITCHEN)).expect(200);
     expect(queue.body.data.find((k: any) => k.id === kot.id)).toMatchObject({ roomNumber: '203', status: 'PLACED' });
@@ -428,33 +524,35 @@ describe('Guest security and orders', () => {
   });
 
   it('staff see guest requests and feedback with room and guest; guests update nothing', async () => {
-    const created = await ctx.api().post(`${V1}/guest/service-requests`).set(bearer(guestA)).send({ key: 'laundry', note: 'Two shirts' }).expect(201);
-    const id = created.body.data.id;
-    await ctx.api().post(`${V1}/guest/feedback`).set(bearer(guestA)).send({ rating: 4, text: 'Nice' }).expect(201);
+    const created = await ctx.api().post(`${V1}/guest/service-requests`).set(bearer(guestA)).send({ key: 'laundry', note: 'Two shirts', stayIds: [stayA.id] }).expect(201);
+    const requestId = created.body.data.rooms[0].requestId;
+    const booking = await stayingA();
+    await ctx.api().post(`${V1}/guest/feedback`).set(bearer(guestA)).send({ rating: 4, text: 'Nice', bookingId: booking.id }).expect(201);
+    const [other] = await bookingsOf(guestB);
+    await ctx.api().post(`${V1}/guest/feedback`).set(bearer(guestA)).send({ rating: 1, bookingId: other.id }).expect(404);
 
     const list = await ctx.api().get(`${V1}/service-requests`).query({ status: 'SENT' }).set(staff()).expect(200);
-    expect(list.body.data.find((r: any) => r.id === id)).toMatchObject({ roomNumber: '203', guestName: 'Guest A', label: 'Laundry pickup' });
-    const updated = await ctx.api().patch(`${V1}/service-requests/${id}`).set(staff()).send({ status: 'IN_PROGRESS' }).expect(200);
+    expect(list.body.data.find((r: any) => r.id === requestId)).toMatchObject({ roomNumber: '203', guestName: 'Guest A', label: 'Laundry pickup' });
+    const updated = await ctx.api().patch(`${V1}/service-requests/${requestId}`).set(staff()).send({ status: 'IN_PROGRESS' }).expect(200);
     expect(updated.body.data.status).toBe('IN_PROGRESS');
-    await ctx.api().patch(`${V1}/service-requests/${id}`).set(bearer(guestA)).send({ status: 'DONE' }).expect(403);
+    await ctx.api().patch(`${V1}/service-requests/${requestId}`).set(bearer(guestA)).send({ status: 'DONE' }).expect(403);
 
     const feedback = await ctx.api().get(`${V1}/feedback`).set(bearer(ctx.token.MANAGER)).expect(200);
-    expect(feedback.body.data[0]).toMatchObject({ roomNumber: '203', guestName: 'Guest A', rating: 4 });
+    expect(feedback.body.data.find((f: any) => f.guestName === 'Guest A')).toMatchObject({ roomNumber: '203', rating: 4 });
     await ctx.api().get(`${V1}/feedback`).set(staff()).expect(403);
   });
 
   it('a pay-now order stays off the folio', async () => {
-    const before = await ctx.api().get(`${V1}/guest/folio`).set(bearer(guestA)).expect(200);
-    await ctx.api().post(`${V1}/guest/orders`).set(bearer(guestA))
-      .send({ items: [{ menuItemId: await ctx.menuId('Cold Drink'), qty: 1 }], billTo: 'PAY_NOW' })
-      .expect(201);
-    const after = await ctx.api().get(`${V1}/guest/folio`).set(bearer(guestA)).expect(200);
-    expect(after.body.data.balance).toBe(before.body.data.balance);
+    const booking = await stayingA();
+    const bill = async () => (await ctx.api().get(`${V1}/guest/bookings/${booking.id}/folio`).set(bearer(guestA))).body.data.balance;
+    const before = await bill();
+    expect((await order(guestA, stayA.id, 'Cold Drink', 'PAY_NOW')).status).toBe(201);
+    expect(await bill()).toBe(before);
   });
 
   it('client-sent prices are rejected, not trusted', async () => {
     await ctx.api().post(`${V1}/guest/orders`).set(bearer(guestA))
-      .send({ items: [{ menuItemId: await ctx.menuId('Veg Thali'), qty: 1, price: 1 }], billTo: 'ROOM' })
+      .send({ stayId: stayA.id, items: [{ menuItemId: await ctx.menuId('Veg Thali'), qty: 1, price: 1 }], billTo: 'ROOM' })
       .expect(400);
   });
 
@@ -472,23 +570,23 @@ describe('Guest security and orders', () => {
     hotel.on('kot.created', () => got.hotel++);
     a.on('kot.created', () => got.a++);
     b.on('kot.created', () => got.b++);
-    await ctx.api().post(`${V1}/guest/orders`).set(bearer(guestA))
-      .send({ items: [{ menuItemId: await ctx.menuId('Masala Chai'), qty: 1 }], billTo: 'ROOM' })
-      .expect(201);
+    expect((await order(guestA, stayA.id, 'Masala Chai')).status).toBe(201);
     await new Promise((r) => setTimeout(r, 300));
     expect(got).toEqual({ hotel: 1, a: 1, b: 0 });
     [hotel, a, b].forEach((s) => s.close());
     await new Promise((resolve) => ctx.app.getHttpServer().close(resolve));
   });
 
-  it('a checked-out guest token stops working everywhere', async () => {
+  it('after check-out the customer stays signed in, with the stay under past bookings', async () => {
     await ctx.api().post(`${V1}/stays/${stayB.id}/checkout`).set(staff()).send({}).expect(200);
-    for (const path of ['stay', 'folio', 'orders', 'menu']) {
-      const res = await ctx.api().get(`${V1}/guest/${path}`).set(bearer(guestB)).expect(401);
-      expect(res.body.code).toBe('STAY_ENDED');
-    }
+    const [past] = await bookingsOf(guestB);
+    expect(past).toMatchObject({ status: 'CHECKED_OUT', rooms: [expect.objectContaining({ stayId: stayB.id, status: 'CHECKED_OUT' })] });
+    await ctx.api().get(`${V1}/guest/bookings/${past.id}/folio`).set(bearer(guestB)).expect(200);
+    expect((await order(guestB, stayB.id, 'Masala Chai')).body.code).toBe('STAY_NOT_ACTIVE');
+    await ctx.api().get(`${V1}/guest/stay`).set(bearer(guestB)).expect(404); // removed
   });
 });
+
 
 describe('Public browsing and booking', () => {
   const daysFromNow = (n: number) => {
@@ -515,7 +613,8 @@ describe('Public browsing and booking', () => {
   it('books with a correct OTP, at the server price, once only', async () => {
     const otp = await sendOtp('9600000001');
     const res = await ctx.api().post(`${V1}/public/bookings`).send(await form('9600000001', { otp })).expect(201);
-    expect(res.body.data.booking).toEqual({ id: expect.any(String), ref: expect.stringMatching(/^GA\d+/), amount: 5200, status: 'REQUESTED' });
+    expect(res.body.data.booking).toMatchObject({ id: expect.any(String), ref: expect.stringMatching(/^GA\d+/), amount: 5200, status: 'REQUESTED', nights: 2 });
+    expect(res.body.data.booking.rooms).toEqual([expect.objectContaining({ stayId: null, roomType: 'Deluxe', guests: 2, rate: 2600 })]);
     expect((await ctx.model('Booking').findById(res.body.data.booking.id).lean() as any).source).toBe('GuestApp');
     await ctx.api().post(`${V1}/public/bookings`).send(await form('9600000001', { otp })).expect(400);
   });

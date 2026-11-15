@@ -16,6 +16,8 @@ import { Expense } from '../expenses/schemas/expense.schema';
 import { EventsService } from '../notifications/events.service';
 import { Room } from '../rooms/schemas/room.schema';
 import { User } from '../users/schemas/user.schema';
+import { Settlement } from '../stays/schemas/settlement.schema';
+import { settlementRow } from '../stays/settlement-row';
 import { CloseBusinessDayDto, StartBusinessDayDto } from './dto/daybook.dto';
 import { BusinessDayStatus, DayBook, DayBookDocument } from './schemas/day-book.schema';
 
@@ -43,6 +45,7 @@ export class DaybookService {
     private readonly dates: BusinessDateService,
     private readonly events: EventsService,
     private readonly audit: AuditService,
+    @InjectModel(Settlement.name) private readonly settlements: Model<Settlement>,
   ) {}
 
   /**
@@ -263,6 +266,7 @@ export class DaybookService {
   async get(date: string) {
     const day = await this.books.findOne({ businessDate: date }).lean();
     const { credits, debits } = await this.totals(date);
+    const short = await this.settlements.find({ businessDate: date, shortfall: { $gt: Types.Decimal128.fromString('0') } }).select('shortfall').lean();
     const opening = day ? dec(day.openingBalance) : dec(await this.carriedOpening(date));
     const status = statusOf(day);
     const names = await this.namesOf([day?.openedByUserId, day?.closedByUserId]);
@@ -285,18 +289,29 @@ export class DaybookService {
       shortage: day?.shortage ?? null,
       closeNote: day?.closeNote ?? '',
       startNote: day?.startNote ?? '',
+      /** Unpaid at check-outs that day: the short-by highlight. */
+      checkoutShortfall: toD128(short.reduce((t, x) => t.plus(dec(x.shortfall)), dec(0))),
+      checkoutsShort: short.length,
     };
   }
 
-  /** Every money line of a business day, in time order. Its totals equal /daybook's. */
+  /**
+   * Every money line of a business day, in time order. Its totals equal /daybook's.
+   * A check-out is one line (its Settlement); the per-mode rows it owns are in `payments`.
+   */
   async register(date: string) {
-    const [entries, expenses] = await Promise.all([
-      this.entries.find({ businessDate: date }).lean(),
+    const [entries, expenses, settlements] = await Promise.all([
+      this.entries.find({ businessDate: date, settlementId: null }).lean(),
       this.expenses.find({ businessDate: date }).lean(),
+      this.settlements.find({ businessDate: date }).lean(),
     ]);
-    const rooms = await this.rooms.find({ _id: { $in: entries.map((e) => e.roomId).filter(Boolean) } }).select('number').lean();
+    const rooms = await this.rooms
+      .find({ _id: { $in: [...entries.map((e) => e.roomId), ...settlements.map((x) => x.roomId)].filter(Boolean) } })
+      .select('number')
+      .lean();
     const numberOf = new Map(rooms.map((r) => [String(r._id), r.number]));
-    const lines = [
+    const lines: any[] = [
+      ...settlements.map((x) => ({ ...settlementRow(x, numberOf.get(String(x.roomId)) ?? null), createdAt: (x as any).createdAt })),
       ...entries.map((e) => ({
         id: e._id,
         kind: 'entry' as const,
@@ -306,12 +321,14 @@ export class DaybookService {
         guestName: e.guestName,
         phone: e.phone,
         vehicle: e.vehicle,
+        stayId: e.stayId ?? null,
         type: e.type,
         mode: e.mode,
         dc: e.dc,
         amount: e.amount,
         narration: e.narration,
         shortfall: e.shortfall ?? null,
+        informational: false,
         createdAt: (e as any).createdAt,
       })),
       ...expenses.map((x) => ({
@@ -329,11 +346,23 @@ export class DaybookService {
         amount: x.amount,
         narration: x.narration,
         shortfall: null,
+        // Bought on credit: shown for the record, but no money moved, so it isn't in the totals.
+        // Its payments appear as EXPENSE_PAYMENT entries on the days they're made.
+        informational: !!x.onCredit,
+        onCredit: !!x.onCredit,
+        dueAmount: x.dueAmount ?? null,
         createdAt: (x as any).createdAt,
       })),
     ];
     lines.sort((a, b) => (a.time || '').localeCompare(b.time || '') || +new Date(a.createdAt) - +new Date(b.createdAt));
     return lines.map(({ createdAt: _c, ...line }) => line);
+  }
+
+  /** Check-outs of a day as single lines (for the entries list). */
+  async settlementRows(date: string) {
+    const settlements = await this.settlements.find({ businessDate: date }).lean();
+    const rooms = await this.rooms.find({ _id: { $in: settlements.map((x) => x.roomId) } }).select('number').lean();
+    return settlements.map((x) => settlementRow(x, rooms.find((r) => String(r._id) === String(x.roomId))?.number ?? null));
   }
 
   /** Days closed with a cash difference, and checkouts that left money unpaid. */
@@ -344,8 +373,19 @@ export class DaybookService {
         .find({ businessDate: { $gte: from, $lte: to }, shortage: { $nin: [null, Types.Decimal128.fromString('0')] } })
         .sort({ businessDate: 1 })
         .lean(),
-      this.entries.find({ businessDate: { $gte: from, $lte: to }, shortfall: { $gt: Types.Decimal128.fromString('0') } }).sort({ businessDate: 1, time: 1 }).lean(),
+      this.entries
+        .find({ businessDate: { $gte: from, $lte: to }, settlementId: null, shortfall: { $gt: Types.Decimal128.fromString('0') } })
+        .sort({ businessDate: 1, time: 1 })
+        .lean(),
     ]);
+    // Check-outs left short: one per settlement (older ones carried it on an entry).
+    const settled = await this.settlements
+      .find({ businessDate: { $gte: from, $lte: to }, shortfall: { $gt: Types.Decimal128.fromString('0') } })
+      .sort({ businessDate: 1, time: 1 })
+      .lean();
+    entries.push(
+      ...settled.map((x) => ({ _id: x._id, businessDate: x.businessDate, time: x.time, roomId: x.roomId, stayId: x.stayId, guestName: x.guestName, phone: x.phone, amount: x.amount, shortfall: x.shortfall, narration: x.narration }) as any),
+    );
     const rooms = await this.rooms.find({ _id: { $in: entries.map((e) => e.roomId).filter(Boolean) } }).select('number').lean();
     const numberOf = new Map(rooms.map((r) => [String(r._id), r.number]));
     return {

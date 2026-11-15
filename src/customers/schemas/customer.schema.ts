@@ -33,6 +33,10 @@ export class Customer {
   @Prop({ type: String, default: '' })
   notes: string;
 
+  /** What the customer owes the hotel (udhaar). Changed only with a credit entry, in the same transaction. */
+  @Prop(money({ required: false, default: () => Types.Decimal128.fromString('0') }))
+  creditBalance: Types.Decimal128;
+
   /** Kept in step with customer_documents, for list filters. */
   @Prop({ type: Number, default: 0, min: 0 })
   documentCount: number;
@@ -49,3 +53,4 @@ CustomerSchema.index(
 );
 CustomerSchema.index({ lastVisitAt: -1, _id: -1 });
 CustomerSchema.index({ name: 1 });
+CustomerSchema.index({ creditBalance: -1 });

@@ -77,6 +77,7 @@ Responses are `{ data, meta }` and errors `{ statusCode, code, message }`. Login
 - **Atomic money:** entry, cash line and folio line go through `TransactionService.run()`. Socket events fire only after commit.
 - **Business day (shift):** money is posted only while a business day is open, and only one can be open at a time. Its `businessDate` is chosen at `POST /business-day/start`, not taken from the clock, so a shift can run past midnight. Every posting is stamped with the open day's date, and any date the app sends is ignored; with no open day it's `409 DAY_NOT_OPEN`. Close with `POST /business-day/close` and a cash count: closing = opening + credits − debits (all modes), expected cash = opening + net CASH movements, shortage = expected − counted, and a note is required for any difference. A closed day can't be edited by anyone; only the OWNER can reopen it.
 - **Customers:** one per phone (last 10 digits, unique), found or created at check-in and when a guest is added. ID documents are stored privately in the MongoDB GridFS bucket `customer_document_files` and served only through 5-minute signed links; responses show only the last 4 digits of an ID number. Uploads, views and deletes are audit-logged.
+- **Guest app:** sign-in is by phone and OTP, and the token names the customer, not a stay. A customer sees every booking linked to them: ones they made signed in, and ones made at the desk or publicly with their phone. Every stay belongs to a booking (a walk-in gets a one-room booking at check-in). Orders, requests and check-out requests name the room (`stayId`/`stayIds`), which must be the customer's and checked in.
 - **GST:** set on the server (`src/common/services/gst.service.ts`, overridable by env): rooms 5% up to ₹7,500/night and 18% above, food 5%, other services 18%, added on top (`GST_TAX_INCLUSIVE=false`). Every charge line stores its taxable value, CGST and SGST (always equal). A stay keeps the GST mode it checked in with; stays from before this keep 12% on top.
 - **Bills:** `GET /stays/:id/bill` gives STAY / FOOD / OTHER sections with CGST + SGST. The bill number (`MTH/2026-27/00123`) comes from a per-financial-year counter at check-out and never repeats. `POST /stays/:id/bill-prints` only records a print for audit and changes no figures.
 - **Register:** `GET /daybook/register` lists every money line of a business day (entries and expenses) with its `source`; its totals equal `/daybook`'s. Only `MANUAL` entries are edited through `/entries`. At checkout, money still owed is stored as the settlement line's `shortfall` and stays on the folio.
@@ -127,6 +128,12 @@ See [.env.example](.env.example). Everything is validated at startup.
 **Seed once**, from your machine, with `.env` holding the Atlas URI and real `OWNER_*` values: `npm run seed`.
 
 **Local MongoDB:** the compose file raises the container's open-file limit to 64,000. At Docker's default of 1,024, mongod aborts (exit code 14, WiredTiger error 24) once the test suite has created enough collections. Recreate the container after pulling: `docker compose up -d mongodb`.
+
+**Guest-bookings migration:** after `migrate:customers`, run `npm run migrate:guest-bookings`. It stores booking phones as 10 digits, links bookings to customers, gives every stay a booking, and closes fully checked-out bookings. It is idempotent.
+
+**Room-type rates migration:** `npm run migrate:room-type-rates` sets single and double rates on each room type from its tariff or its cheapest room. Types it can't price are listed for the owner. It is idempotent.
+
+**Settlements migration:** `npm run migrate:settlements` groups past check-outs into one register row each. It only groups rows; no amounts change. It is idempotent.
 
 **Customer migration:** `npm run migrate:customers` builds customers from existing stays by phone and links each stay. It is idempotent.
 

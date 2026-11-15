@@ -14,6 +14,10 @@ export enum EntrySource {
   ONLINE = 'ONLINE',
   REQUEST = 'REQUEST',
   REFUND = 'REFUND',
+  /** A customer paying off credit (udhaar). */
+  CUSTOMER_CREDIT = 'CUSTOMER_CREDIT',
+  /** Paying a vendor for an expense bought on credit. */
+  EXPENSE_PAYMENT = 'EXPENSE_PAYMENT',
   OTHER = 'OTHER',
 }
 
@@ -70,6 +74,10 @@ export class DayRegisterEntry {
   @Prop({ type: String, enum: [...Object.values(EntrySource), null], default: null })
   source: EntrySource | null;
 
+  /** Set on rows taken at check-out: the register shows the settlement, not each row. */
+  @Prop(ref('Settlement', { required: false }))
+  settlementId: Types.ObjectId | null;
+
   /** Covered by the no-duplicate index. False only for split checkout rows. */
   @Prop({ type: Boolean, default: true })
   dupCheck: boolean;
@@ -85,6 +93,7 @@ export const DayRegisterEntrySchema = buildSchema(DayRegisterEntry);
 DayRegisterEntrySchema.index({ businessDate: 1, createdAt: 1 });
 DayRegisterEntrySchema.index({ roomId: 1, businessDate: 1 });
 DayRegisterEntrySchema.index({ stayId: 1 });
+DayRegisterEntrySchema.index({ settlementId: 1 });
 DayRegisterEntrySchema.index({ shortfall: 1, businessDate: 1 });
 // Database backstop for the "no double entry" rule. The service checks
 // first and answers 409 DUPLICATE_ENTRY; this index catches the race where

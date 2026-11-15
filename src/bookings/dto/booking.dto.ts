@@ -1,3 +1,4 @@
+import { RoomLineDto, RoomLines } from './room-lines.dto';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsEnum, IsInt, IsMongoId, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 import { IsBusinessDate, IsDecimal, PageQueryDto } from '../../common/dto/common.dto';
@@ -12,17 +13,20 @@ export class GuestBookingDto {
   @ApiProperty({ type: String })
   phone: string;
 
-  @IsMongoId()
-  @ApiProperty({ type: String })
-  roomTypeId: string;
+  /** Older apps: the one room type of the booking. New apps send it per room in `rooms`. */
+  @IsOptional() @IsMongoId()
+  @ApiPropertyOptional({ type: String })
+  roomTypeId?: string;
 
-  @IsInt() @Min(1)
-  @ApiProperty({ type: Number })
-  rooms: number;
+  /** One entry per room: { roomTypeId, guests }. A number (older apps) is split by `pax`. */
+  @RoomLines()
+  @ApiProperty({ type: [RoomLineDto] })
+  rooms: RoomLineDto[];
 
-  @IsInt() @Min(1)
-  @ApiProperty({ type: Number })
-  pax: number;
+  /** Total guests; must equal the sum of guests when given. */
+  @IsOptional() @IsInt() @Min(1)
+  @ApiPropertyOptional({ type: Number })
+  pax?: number;
 
   @IsBusinessDate()
   @ApiProperty({ type: String })
@@ -54,17 +58,20 @@ export class CreateBookingDto {
   @ApiPropertyOptional({ type: String })
   phone?: string;
 
-  @IsMongoId()
-  @ApiProperty({ type: String })
-  roomTypeId: string;
+  /** Older apps: the one room type of the booking. New apps send it per room in `rooms`. */
+  @IsOptional() @IsMongoId()
+  @ApiPropertyOptional({ type: String })
+  roomTypeId?: string;
 
-  @IsInt() @Min(1)
-  @ApiProperty({ type: Number })
-  rooms: number;
+  /** One entry per room: { roomTypeId, guests }. A number (older apps) is split by `pax`. */
+  @RoomLines()
+  @ApiProperty({ type: [RoomLineDto] })
+  rooms: RoomLineDto[];
 
-  @IsInt() @Min(1)
-  @ApiProperty({ type: Number })
-  pax: number;
+  /** Total guests; must equal the sum of guests when given. */
+  @IsOptional() @IsInt() @Min(1)
+  @ApiPropertyOptional({ type: Number })
+  pax?: number;
 
   @IsBusinessDate()
   @ApiProperty({ type: String })
@@ -75,9 +82,10 @@ export class CreateBookingDto {
   departureDate: string;
 
   /** The figure quoted by the OTA or agreed on the phone. */
-  @IsDecimal({ min: '0' })
-  @ApiProperty({ type: String })
-  amount: string;
+  /** OTA bookings only: what the OTA charged. Ignored otherwise: the server prices the booking. */
+  @IsOptional() @IsDecimal({ min: '0' })
+  @ApiPropertyOptional({ type: String })
+  amount?: string;
 
   @IsOptional() @IsString() @MaxLength(40)
   @ApiPropertyOptional({ type: String })

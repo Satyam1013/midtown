@@ -15,6 +15,9 @@ import { Principal, userObjectId } from '../common/interfaces/principal';
 import { TransactionService } from '../database/transaction.service';
 import { CreateRoomDto, SetRoomStatusDto, UpdateRoomDto } from './dto/room.dto';
 import { RoomMaintenance } from './schemas/room-maintenance.schema';
+import { RoomImage } from './schemas/room-image.schema';
+import { ImageStorageService } from '../files/image-storage.service';
+import { UploadedFileLike } from '../customers/customer-documents.service';
 import { Room, RoomCategory, RoomStatus } from './schemas/room.schema';
 
 // Allowed manual moves. OCCUPIED and DIRTY only ever come from check-in / check-out.
@@ -40,14 +43,17 @@ export class RoomsService {
     @InjectModel(RoomMaintenance.name) private readonly maintenance: Model<RoomMaintenance>,
     private readonly tx: TransactionService,
     private readonly audit: AuditService,
+    @InjectModel(RoomImage.name) private readonly images: Model<RoomImage>,
+    private readonly storage: ImageStorageService,
   ) {}
 
   /** All rooms with their type, prices and current stay, in the shape the manager app reads. */
   async list() {
-    const [rooms, types, stays] = await Promise.all([
+    const [rooms, types, stays, images] = await Promise.all([
       this.rooms.find().sort({ floor: 1, number: 1 }).lean(),
       this.types.find().lean(),
       this.stays.find({ status: StayStatus.IN_HOUSE }).lean(),
+      this.images.find().sort({ sortOrder: 1, createdAt: 1 }).lean(),
     ]);
     const [balances, decorated] = await Promise.all([
       this.folio.balances(stays.map((s) => s._id)),
@@ -62,7 +68,14 @@ export class RoomsService {
         ...room,
         category: room.category ?? type?.category ?? null,
         features: room.features ?? [],
+        images: images.filter((i) => String(i.roomId) === String(room._id)).map((i) => ({ id: i._id, url: i.url })),
         description: room.description ?? '',
+        beds: room.beds ?? '',
+        blurb: room.blurb ?? '',
+        size: room.size ?? '',
+        sizeSqft: room.sizeSqft ?? null,
+        sleeps: room.sleeps ?? null,
+        additionalGuestPrice: room.additionalGuestPrice ?? null,
         maintenanceReason: room.maintenanceReason ?? null,
         maintenanceUntil: room.maintenanceUntil ?? null,
         // Older rooms have only `rate`; it stands in for both until the manager sets them.
@@ -72,6 +85,33 @@ export class RoomsService {
         currentStay: stay ? { ...stay, balance: balances.get(String(stay._id)) ?? toD128('0') } : null,
       };
     });
+  }
+
+  async one(id: Types.ObjectId) {
+    const room = (await this.list()).find((r) => String(r._id) === String(id));
+    if (!room) throw notFound('Room');
+    return room;
+  }
+
+  /** One photo per call, appended after the room's existing photos. */
+  async addImage(id: Types.ObjectId, file: UploadedFileLike | undefined) {
+    if (!(await this.rooms.exists({ _id: id }))) throw notFound('Room');
+    const saved = await this.storage.save(file, { roomId: id });
+    try {
+      const last = await this.images.findOne({ roomId: id }).sort({ sortOrder: -1 }).lean();
+      const image = await this.images.create({ roomId: id, fileId: saved.fileId, url: saved.url, sortOrder: (last?.sortOrder ?? -1) + 1 });
+      return { id: image._id, url: image.url, sortOrder: image.sortOrder };
+    } catch (err) {
+      await this.storage.remove(saved.fileId);
+      throw err;
+    }
+  }
+
+  async removeImage(id: Types.ObjectId, imageId: Types.ObjectId) {
+    const image = await this.images.findOneAndUpdate({ _id: imageId, roomId: id }, { $set: { deletedAt: new Date() } });
+    if (!image) throw notFound('Image');
+    await this.storage.remove(image.fileId);
+    return { deleted: true };
   }
 
   async create(dto: CreateRoomDto) {
@@ -106,7 +146,20 @@ export class RoomsService {
       rate: toD128(single),
       features: dto.features ?? [],
       description: dto.description?.trim() ?? '',
+      ...this.details(dto),
     });
+  }
+
+  /** The six guest-facing fields: missing → unchanged, null or "" → cleared. */
+  private details(dto: Partial<Pick<CreateRoomDto, 'beds' | 'blurb' | 'size' | 'sizeSqft' | 'sleeps' | 'additionalGuestPrice'>>) {
+    const out: Record<string, unknown> = {};
+    for (const k of ['beds', 'blurb', 'size'] as const) if (dto[k] !== undefined) out[k] = dto[k]?.trim() ?? '';
+    if (dto.sizeSqft !== undefined) out.sizeSqft = dto.sizeSqft;
+    if (dto.sleeps !== undefined) out.sleeps = dto.sleeps;
+    if (dto.additionalGuestPrice !== undefined) {
+      out.additionalGuestPrice = dto.additionalGuestPrice === null || dto.additionalGuestPrice === '' ? null : toD128(dto.additionalGuestPrice);
+    }
+    return out;
   }
 
   /**
@@ -117,7 +170,7 @@ export class RoomsService {
     return this.tx.run(async ({ session }) => {
       const room = await this.rooms.findById(id).session(session);
       if (!room) throw notFound('Room');
-      const before = { number: room.number, floor: room.floor, category: room.category, roomTypeId: room.roomTypeId, singleRate: room.singleRate ?? room.rate, doubleRate: room.doubleRate ?? room.rate };
+      const before = { number: room.number, floor: room.floor, category: room.category, roomTypeId: room.roomTypeId, singleRate: room.singleRate ?? room.rate, doubleRate: room.doubleRate ?? room.rate, additionalGuestPrice: room.additionalGuestPrice ?? null, sleeps: room.sleeps ?? null };
       const changingType = dto.roomTypeId !== undefined || dto.roomType !== undefined;
       const type = changingType
         ? await this.resolveType(dto.roomTypeId, dto.roomType)
@@ -151,6 +204,8 @@ export class RoomsService {
       room.doubleRate ??= room.rate;
       if (dto.features !== undefined) room.features = [...new Set(dto.features)];
       if (dto.description !== undefined) room.description = dto.description.trim();
+      // Only future check-ins and added guests use these; running stays keep their rate.
+      room.set(this.details(dto));
       await room.save({ session });
       await this.audit.record(
         AuditAction.ROOM_UPDATE,
@@ -159,8 +214,11 @@ export class RoomsService {
         {
           roomId: id,
           before,
-          after: { number: room.number, floor: room.floor, category: room.category, roomTypeId: room.roomTypeId, singleRate: room.singleRate, doubleRate: room.doubleRate },
-          priceChanged: String(before.singleRate) !== String(room.singleRate) || String(before.doubleRate) !== String(room.doubleRate),
+          after: { number: room.number, floor: room.floor, category: room.category, roomTypeId: room.roomTypeId, singleRate: room.singleRate, doubleRate: room.doubleRate, additionalGuestPrice: room.additionalGuestPrice, sleeps: room.sleeps },
+          priceChanged:
+            String(before.singleRate) !== String(room.singleRate) ||
+            String(before.doubleRate) !== String(room.doubleRate) ||
+            String(before.additionalGuestPrice) !== String(room.additionalGuestPrice ?? null),
         },
         session,
       );

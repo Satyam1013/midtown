@@ -18,6 +18,10 @@ export class Staff {
   /** Monthly salary. */
   @Prop(money())
   salary: Types.Decimal128;
+
+  /** 10 digits, or '' when not given. */
+  @Prop({ type: String, default: '' })
+  phone: string;
 }
 
 export type StaffDocument = HydratedDocument<Staff>;

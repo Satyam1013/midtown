@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsEnum, IsIn, IsOptional, IsString, MaxLength, IsMongoId } from 'class-validator';
 import { IsClockTime, IsDecimal, PageQueryDto } from '../../common/dto/common.dto';
 import { PaymentMode } from '../../common/enums';
 import { ServiceRequestKey, ServiceRequestStatus } from '../schemas/service-request.schema';
@@ -59,4 +59,29 @@ export class ChargeRequestDto {
   @ApiPropertyOptional({ type: String })
   @IsOptional() @IsString() @MaxLength(300)
   narration?: string;
+}
+
+export class GuestServiceRequestDto {
+  @IsEnum(ServiceRequestKey)
+  @ApiProperty({ enum: ServiceRequestKey })
+  key: ServiceRequestKey;
+
+  @IsOptional() @IsString() @MaxLength(300)
+  @ApiPropertyOptional({ type: String })
+  note?: string;
+
+  /** The rooms (stays) it's for; each must be checked in. One request is made per room. */
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(10) @IsMongoId({ each: true })
+  @ApiProperty({ type: [String] })
+  stayIds: string[];
+}
+
+export class GuestCheckoutRequestDto {
+  @IsOptional() @IsString() @MaxLength(300)
+  @ApiPropertyOptional({ type: String })
+  note?: string;
+
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(10) @IsMongoId({ each: true })
+  @ApiProperty({ type: [String] })
+  stayIds: string[];
 }

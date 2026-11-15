@@ -46,6 +46,11 @@ export class CreateKotDto {
 }
 
 export class GuestOrderDto {
+  /** The room to deliver to and, with billTo ROOM, to charge. Must be checked in. */
+  @IsMongoId()
+  @ApiProperty({ type: String })
+  stayId: string;
+
   @IsArray() @ArrayMinSize(1) @ValidateNested({ each: true }) @Type(() => KotItemDto)
   @ApiProperty({ type: [KotItemDto] })
   items: KotItemDto[];

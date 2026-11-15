@@ -24,6 +24,39 @@ export class TakePaymentDto {
   narration?: string;
 }
 
+export enum AdjustmentKind {
+  /** Reduces the bill. */
+  DISCOUNT = 'DISCOUNT',
+  /** Adds a half-day charge (late check-out). */
+  HALF_DAY = 'HALF_DAY',
+  /** Waives a charge. */
+  COMPLIMENTARY = 'COMPLIMENTARY',
+}
+
+export class CheckoutAdjustmentDto {
+  @ApiProperty({ enum: AdjustmentKind })
+  @IsEnum(AdjustmentKind)
+  kind: AdjustmentKind;
+
+  /** What the app entered (a percentage or flat value); stored for the record. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @MaxLength(20)
+  value?: string;
+
+  @ApiProperty({ enum: ['STAY', 'FOOD', 'OTHER'] })
+  @IsIn(['STAY', 'FOOD', 'OTHER'])
+  section: 'STAY' | 'FOOD' | 'OTHER';
+
+  /** How much the bill changes, GST included. Always positive; the kind decides the direction. */
+  @ApiProperty({ type: String })
+  @IsDecimal({ positive: true })
+  amount: string;
+
+  @ApiProperty({ type: String })
+  @IsString() @IsNotEmpty() @MaxLength(200)
+  reason: string;
+}
+
 export class SplitPaymentDto {
   @ApiProperty({ enum: PaymentMode })
   @IsEnum(PaymentMode)
@@ -33,9 +66,10 @@ export class SplitPaymentDto {
   @IsDecimal({ positive: true })
   amount: string;
 
-  @ApiProperty({ type: String })
-  @IsClockTime()
-  time: string;
+  /** Defaults to the check-out's time. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsClockTime()
+  time?: string;
 
   @ApiPropertyOptional({ type: String })
   @IsOptional() @IsString() @MaxLength(300)
@@ -178,6 +212,26 @@ export class CheckOutDto {
   @ApiPropertyOptional({ type: [SplitPaymentDto] })
   @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => SplitPaymentDto)
   payments?: SplitPaymentDto[];
+
+  /** Clock time of the check-out; defaults to the first payment's time, else now. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsClockTime()
+  time?: string;
+
+  /** What the user typed; shown on the one register row for this check-out. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @MaxLength(300)
+  narration?: string;
+
+  /** Discounts, half-day charges, complimentary items: applied to the folio first, in the same transaction. */
+  @ApiPropertyOptional({ type: [CheckoutAdjustmentDto] })
+  @IsOptional() @IsArray() @ArrayMaxSize(10) @ValidateNested({ each: true }) @Type(() => CheckoutAdjustmentDto)
+  adjustments?: CheckoutAdjustmentDto[];
+
+  /** Moves this much of the unpaid balance onto the customer's credit (udhaar) instead of leaving a shortfall. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsDecimal({ positive: true })
+  creditAmount?: string;
 }
 
 export class ShiftRoomDto {

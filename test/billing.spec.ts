@@ -51,7 +51,7 @@ describe('Maintenance', () => {
     expect((await ctx.api().post(`${V1}/stays/${stay.id}/shift`).set(staff()).send({ toRoomId: rooms['601'], guests: 1, businessDate: ctx.today, time: '10:00' }).expect(409)).body.code).toBe('ROOM_NOT_VACANT');
     const typeId = after.id;
     const booking = await ctx.api().post(`${V1}/bookings`).set(staff())
-      .send({ source: 'Walk-in', guestName: 'Group', phone: '9700060009', roomTypeId: typeId, rooms: after.totalRooms + 1, pax: 1, arrivalDate: ctx.today, departureDate: '2027-01-02', amount: '1000' });
+      .send({ source: 'Walk-in', guestName: 'Group', phone: '9700060009', roomTypeId: typeId, rooms: after.totalRooms + 1, pax: after.totalRooms + 1, arrivalDate: ctx.today, departureDate: '2027-01-02', amount: '1000' });
     expect([booking.status, booking.body.code]).toEqual([409, 'NO_ROOMS_AVAILABLE']);
 
     // A room with a guest can't go to maintenance.
@@ -105,11 +105,13 @@ describe('Split payment and the bill', () => {
       { mode: 'UPI', amount: '3000.00', time: '10:02', narration: 'second UPI' },
     ];
     const out = (await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff()).send({ businessDate: '2020-01-01', payments: rows }).expect(200)).body.data;
+    // Three ledger rows (mode totals), one settlement (the register line).
     expect(out.entries.map((e: any) => [e.type, e.mode, e.amount, e.source])).toEqual([
-      ['Part payment', 'UPI', 3000, 'CHECKOUT'],
-      ['Part payment', 'CASH', 2111, 'CHECKOUT'],
-      ['Part payment', 'UPI', 3000, 'CHECKOUT'],
+      ['Check-out', 'UPI', 3000, 'CHECKOUT'],
+      ['Check-out', 'CASH', 2111, 'CHECKOUT'],
+      ['Check-out', 'UPI', 3000, 'CHECKOUT'],
     ]);
+    expect(out.settlement).toMatchObject({ mode: 'MIXED', amount: 8111, billTotal: 8111, shortfall: null, payments: [{ mode: 'UPI', amount: 6000 }, { mode: 'CASH', amount: 2111 }] });
     expect(out.shortfall).toBe(0);
     const book1 = await daybook();
     expect(book1.credits - book0.credits).toBeCloseTo(8111);
@@ -154,7 +156,7 @@ describe('Split payment and the bill', () => {
     const out = (await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff())
       .send({ payments: [{ mode: 'UPI', amount: '1000.00', time: '10:00' }, { mode: 'CASH', amount: '1000.00', time: '10:05' }] }).expect(200)).body.data;
     expect(out.shortfall).toBe(2200); // 2000 × 2 × 1.05 = 4200 − 2000
-    expect(out.entries.map((e: any) => e.shortfall)).toEqual([null, 2200]);
+    expect(out.settlement).toMatchObject({ amount: 2000, billTotal: 4200, shortfall: 2200 });
     expect(out.finalBill).toMatchObject({ balance: '2200.00', paid: '2000.00' });
     const customer = (await ctx.api().get(`${V1}/customers/${out.stay.customerId}`).set(staff())).body.data;
     expect(customer.stays[0]).toMatchObject({ balance: 2200 });

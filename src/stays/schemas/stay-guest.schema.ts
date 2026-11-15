@@ -1,3 +1,4 @@
+import { MAX_GUESTS } from '../../config/pricing';
 import { Prop, Schema } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 import { buildSchema, money, ref } from '../../database/build-schema';
@@ -24,7 +25,7 @@ export class StayGuest {
   @Prop({ type: String, required: true })
   businessDate: string;
 
-  @Prop({ required: true, min: 2, max: 4 })
+  @Prop({ required: true, min: 2, max: MAX_GUESTS })
   guestsAfter: number;
 
   @Prop(money())

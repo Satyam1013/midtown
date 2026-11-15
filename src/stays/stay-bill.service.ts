@@ -69,11 +69,16 @@ export class StayBillService {
     };
 
     const sections = (['STAY', 'FOOD', 'OTHER'] as GstSection[]).map((key) => {
-      const own = lines.filter((l) => SOURCE_SECTION[l.source] === key);
+      const own = lines.filter((l) => SOURCE_SECTION[l.source] === key || (l.source === FolioSource.ADJUSTMENT && (l.section ?? 'STAY') === key));
+      const adjustments = own.filter((l) => l.source === FolioSource.ADJUSTMENT);
       const parts = own.map((l) => breakupOf(l, key));
       const totals = sumBreakups(parts);
       const rates = [...new Set(parts.map((p) => p.pct))];
       let items: { description: string; qty: number; rate: string; amount: string; gstRate: number | null }[];
+      const adjustmentItems = adjustments.map((l) => {
+        const p = parts[own.indexOf(l)];
+        return { description: l.head, qty: 1, rate: money(p.taxable), amount: money(p.taxable), gstRate: p.pct };
+      });
       if (key === 'STAY') {
         items = decorated.roomCharges.map((c: any) => ({
           description: `${c.label}, ${c.guests} guest${c.guests === 1 ? '' : 's'}`,
@@ -82,8 +87,10 @@ export class StayBillService {
           amount: money(dec(c.rate).times(c.nights)),
           gstRate: c.gstPct ?? (stay.gst ? null : LEGACY_ROOM_GST_PCT),
         }));
+        items.push(...adjustmentItems);
       } else {
-        items = own.flatMap((l, i) => {
+        items = own.filter((l) => l.source !== FolioSource.ADJUSTMENT).flatMap((l) => {
+          const i = own.indexOf(l);
           const kot = l.kotId ? kotOf.get(String(l.kotId)) : null;
           if (kot) {
             return kot.items.map((it) => ({
@@ -96,6 +103,7 @@ export class StayBillService {
           }
           return [{ description: l.head, qty: 1, rate: money(parts[i].taxable), amount: money(parts[i].taxable), gstRate: parts[i].pct }];
         });
+        items.push(...adjustmentItems);
       }
       return {
         key,
@@ -111,9 +119,9 @@ export class StayBillService {
 
     // Payments: the folio's PAYMENT (negative) and REFUND (positive) lines, with the mode of their register entry.
     const byMode = new Map<string, ReturnType<typeof dec>>();
-    for (const l of lines.filter((x) => x.source === FolioSource.PAYMENT || x.source === FolioSource.REFUND)) {
+    for (const l of lines.filter((x) => [FolioSource.PAYMENT, FolioSource.REFUND, FolioSource.CREDIT].includes(x.source))) {
       const e = l.entryId ? entryOf.get(String(l.entryId)) : null;
-      const mode = e?.mode ?? 'OTHER';
+      const mode = l.source === FolioSource.CREDIT ? 'CREDIT' : (e?.mode ?? 'OTHER');
       byMode.set(mode, (byMode.get(mode) ?? dec(0)).minus(dec(l.amount)));
     }
     const paid = [...byMode.values()].reduce((a, b) => a.plus(b), dec(0));
