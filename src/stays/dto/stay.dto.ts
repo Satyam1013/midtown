@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsEnum, IsIn, IsInt, IsMongoId, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsMongoId, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import { IsBusinessDate, IsClockTime, IsDecimal } from '../../common/dto/common.dto';
 import { PaymentMode } from '../../common/enums';
 import { MAX_GUESTS, MIN_GUESTS } from '../../config/pricing';
@@ -129,6 +129,16 @@ export class CheckInDto {
   @ApiPropertyOptional({ type: TakePaymentDto })
   @IsOptional() @ValidateNested() @Type(() => TakePaymentDto)
   advance?: TakePaymentDto;
+
+  /** Group check-in from the admin app: total guests across the group's rooms. Accepted and ignored; each room is priced on its own `guests`. */
+  @ApiPropertyOptional({ type: Number })
+  @IsOptional() @IsInt() @Min(1) @Max(200)
+  groupSize?: number;
+
+  /** Group check-in from the admin app: marks the lead room. Accepted and ignored. */
+  @ApiPropertyOptional({ type: Boolean })
+  @IsOptional() @IsBoolean()
+  isGroupPrimary?: boolean;
 }
 
 export enum StayPaymentKind {
