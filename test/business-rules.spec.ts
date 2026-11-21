@@ -737,10 +737,11 @@ describe('API contract with the front-ends', () => {
 
   it('attendance is one mark per person per date', async () => {
     const staffList = await ctx.api().get(`${V1}/staff`).set(staff()).expect(200);
-    const body = { staffId: staffList.body.data[0].id, businessDate: ctx.today, mark: 'P' };
+    const open = (await ctx.api().get(`${V1}/business-day/current`).set(staff()).expect(200)).body.data.businessDate;
+    const body = { staffId: staffList.body.data[0].id, businessDate: open, mark: 'P' };
     await ctx.api().put(`${V1}/attendance`).set(staff()).send(body).expect(200);
     await ctx.api().put(`${V1}/attendance`).set(staff()).send({ ...body, mark: 'L' }).expect(200);
-    const marks = await ctx.api().get(`${V1}/attendance`).query({ date: ctx.today }).set(staff()).expect(200);
+    const marks = await ctx.api().get(`${V1}/attendance`).query({ date: open }).set(staff()).expect(200);
     expect(marks.body.data).toHaveLength(1);
     expect(marks.body.data[0].mark).toBe('L');
   });

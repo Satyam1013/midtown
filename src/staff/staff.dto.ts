@@ -23,3 +23,26 @@ export class CreateStaffDto {
   @ApiProperty({ type: String })
   salary: string;
 }
+
+export class UpdateStaffDto {
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(100)
+  @ApiPropertyOptional({ type: String })
+  name?: string;
+
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(40)
+  @ApiPropertyOptional({ type: String })
+  role?: string;
+
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(40)
+  @ApiPropertyOptional({ type: String })
+  shift?: string;
+
+  /** 10 digits, or "" to clear. */
+  @IsOptional() @IsString() @MaxLength(20)
+  @ApiPropertyOptional({ type: String })
+  phone?: string;
+
+  @IsOptional() @IsDecimal({ min: '0' })
+  @ApiPropertyOptional({ type: String })
+  salary?: string;
+}

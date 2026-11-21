@@ -36,6 +36,9 @@ export enum AuditAction {
   LAUNDRY_ORDER = 'LAUNDRY_ORDER',
   STOCK_UPDATE = 'STOCK_UPDATE',
   STOCK_DELETE = 'STOCK_DELETE',
+  ATTENDANCE_MARK = 'ATTENDANCE_MARK',
+  STAFF_UPDATE = 'STAFF_UPDATE',
+  STAFF_DELETE = 'STAFF_DELETE',
 }
 
 @Schema({ collection: 'audit_logs', timestamps: true })

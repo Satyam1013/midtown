@@ -406,6 +406,45 @@ The owner account is now `ADMIN` (it was `OWNER`). Hiding controls in the app is
 - Changing another day returns `403 PAST_DATE_RESTRICTED`. This covers `PATCH` and `DELETE /entries/:id` for an entry from another day, `PATCH /daybook/opening` for another date, and `POST /invoices` dated another day.
 - ADMIN can read any date. A closed day still can't be edited by anyone (`409 DAY_CLOSED`), so an ADMIN reopens it first.
 
+## Inventory: edit and delete stock items (manager app)
+
+- **Units:** `unit` is free text, kept exactly as sent (kg, g, litre, ml, qty, pcs, box, packet, dozen, bottle, bag, carton, can, roll, set, pair, metre …). It was never limited to a list.
+- **`PATCH /stock/:id` (ADMIN, MANAGER):** takes any of `{ item, category, unit, qty, minQty, rate }`.
+  - `qty` is the stock level now. If it differs, an `ADJUSTMENT` movement for the difference (reason "Edited from inventory page", who and when) is written in the same transaction.
+  - A name already used, in any case, returns `409 STOCK_ITEM_EXISTS`.
+  - An empty name or a negative number returns `400`.
+  - The response has the same shape as a row of `GET /stock`.
+- **`DELETE /stock/:id` (ADMIN only):**
+  - Returns `204`, or `404` if not found.
+  - Soft delete (`deletedAt`, `deletedByUserId`): the item drops out of `GET /stock` and the stock report, and its movements stay.
+  - The name can be used again.
+  - The audit log keeps who, when, the item and its last quantity.
+- **`POST /stock/:id/adjust`:** unchanged. A delta that would take stock below zero is refused with `409 INSUFFICIENT_STOCK`, not clamped. Movements now carry `type` (`OPENING` / `ADJUSTMENT`).
+
+## Staff and attendance (manager app)
+
+- **`GET /attendance?date=` or `?from=&to=`, with optional `&staffId=`:**
+  - Returns `[{ staffId, businessDate, mark: "P" | "A" | "L", … }]`, one row per marked person-day.
+  - Range errors: at most 366 days (`400 RANGE_TOO_LONG`), real dates only (`400 INVALID_DATE`), `from` not after `to` (`400 INVALID_RANGE`), and a date is required (`400 DATE_REQUIRED`).
+  - Reading isn't limited to the open day for anyone, and rows of deleted staff are still returned.
+- **`PUT /attendance { staffId, businessDate, mark }`:**
+  - `mark` is `P`, `A` or `L`; `PRESENT`, `ABSENT` and `LEAVE` are accepted too, and stored as `P`/`A`/`L`.
+  - The same person and date replaces the earlier mark, so there is only one row.
+  - A future date returns `400 FUTURE_DATE`.
+  - ADMIN can mark any past date. Others can mark the open day only (`403 PAST_DATE_RESTRICTED`).
+  - An unknown or deleted staff member returns `404`.
+  - Every change is audit-logged (`ATTENDANCE_MARK`) with the old and new mark.
+- **`POST /attendance/bulk { businessDate, marks: [{ staffId, mark }] }`:** the same rules, all marks or none, and returns the rows.
+- **`PATCH /staff/:id` (ADMIN, MANAGER):** takes any of `{ name, role, shift, phone, salary }`.
+  - An empty name or a negative salary returns `400`. A phone must have 10 digits, or be `""`.
+  - The response has the `GET /staff` shape.
+- **`DELETE /staff/:id` (ADMIN only):**
+  - Returns `204`, or `404` if not found.
+  - Soft delete: the member drops out of `GET /staff` and can't get a new salary advance (`400 STAFF_NOT_FOUND`) or a new mark (`404`).
+  - Their attendance and `GET /staff/:id/advances` remain.
+  - Audit-logged.
+- **`GET /staff`:** returns every live staff member, with phone, role, shift and salary, the same for ADMIN and MANAGER.
+
 ## Laundry (manager app)
 
 Laundry routes are for ADMIN and MANAGER, except `GET /laundry/prices`, which the desk can read.

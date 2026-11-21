@@ -1,6 +1,6 @@
 import { Prop, Schema } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
-import { buildSchema, money } from '../../database/build-schema';
+import { buildSchema, money, ref } from '../../database/build-schema';
 
 // Payroll / attendance roster. Separate from User: most staff never log in.
 @Schema({ collection: 'staff', timestamps: true })
@@ -22,6 +22,10 @@ export class Staff {
   /** 10 digits, or '' when not given. */
   @Prop({ type: String, default: '' })
   phone: string;
+
+  /** Deleted staff only: who deleted them. Their attendance and advances are kept. */
+  @Prop(ref('User', { required: false }))
+  deletedByUserId: Types.ObjectId | null;
 }
 
 export type StaffDocument = HydratedDocument<Staff>;
