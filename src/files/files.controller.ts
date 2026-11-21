@@ -11,8 +11,10 @@ export class ImagesController {
   /** Room and menu photos: public, cacheable. */
   @Public()
   @Get('images/:id')
-  async image(@Param('id') id: string, @Res() res: { set(h: Record<string, string>): void; destroy(): void } & NodeJS.WritableStream) {
+  async image(@Param('id') id: string, @Res() res: { set(h: Record<string, string>): void; destroy(): void; redirect(status: number, url: string): void } & NodeJS.WritableStream) {
     const file = await this.images.open(id);
+    // Photos moved to Spaces: older links in saved records keep working.
+    if ('redirect' in file) return res.redirect(301, file.redirect);
     res.set({
       'Content-Type': file.mimeType,
       'Content-Length': String(file.size),

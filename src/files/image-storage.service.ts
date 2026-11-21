@@ -1,26 +1,20 @@
 import { Injectable } from '@nestjs/common';
-import { InjectConnection } from '@nestjs/mongoose';
-import { Connection, mongo, Types } from 'mongoose';
-import { Readable } from 'stream';
+import { Types } from 'mongoose';
 import { badRequest, notFound } from '../common/errors';
 import { sniffMime, UploadedFileLike } from '../customers/customer-documents.service';
+import { BlobStoreService } from './blob-store.service';
 
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
-const BUCKET = 'public_images';
 
 /**
- * Room and menu photos, in the same MongoDB (GridFS) storage as ID documents
- * but a separate bucket. These are meant to be seen, so they are served
- * publicly at /api/v1/files/images/:id; ID documents never are.
+ * Room and menu photos. They are meant to be seen: with Spaces they are public
+ * files on the CDN; with GridFS they are served at /api/v1/files/images/:id.
+ * ID documents are never public (CustomerDocumentsService).
  */
 @Injectable()
 export class ImageStorageService {
-  private readonly bucket: mongo.GridFSBucket;
-
-  constructor(@InjectConnection() connection: Connection) {
-    this.bucket = new mongo.GridFSBucket(connection.db!, { bucketName: BUCKET });
-  }
+  constructor(private readonly blobs: BlobStoreService) {}
 
   /** Checks the real file type (JPG, PNG or WEBP) and size, then stores it. */
   async save(file: UploadedFileLike | undefined, meta: Record<string, unknown>) {
@@ -29,27 +23,25 @@ export class ImageStorageService {
     const mimeType = sniffMime(file.buffer);
     if (!mimeType || !IMAGE_TYPES.includes(mimeType)) throw badRequest('UNSUPPORTED_FILE', 'Upload a JPG, PNG or WEBP photo');
     const id = new Types.ObjectId();
-    await new Promise<void>((resolve, reject) => {
-      Readable.from(file.buffer)
-        .pipe(this.bucket.openUploadStreamWithId(id, file.originalname.slice(0, 200), { metadata: { ...meta, mimeType } }))
-        .on('finish', () => resolve())
-        .on('error', reject);
-    });
-    return { fileId: id, url: ImageStorageService.url(id) };
+    await this.blobs.put('images', id, file.buffer, { mimeType, fileName: file.originalname, metadata: meta });
+    return { fileId: id, url: this.blobs.imageUrl(id) };
   }
 
   remove(fileId: Types.ObjectId) {
-    return this.bucket.delete(fileId).catch(() => undefined);
+    return this.blobs.delete('images', fileId);
   }
 
-  async open(id: string) {
+  /** For /files/images/:id: the file, or (with Spaces) where it lives now. */
+  async open(id: string): Promise<{ redirect: string } | { stream: NodeJS.ReadableStream; mimeType: string; size: number }> {
     if (!Types.ObjectId.isValid(id)) throw notFound('Image');
-    const [file] = await this.bucket.find({ _id: new Types.ObjectId(id) }).toArray();
+    if (this.blobs.driver === 'spaces') return { redirect: this.blobs.imageUrl(id) };
+    const file = await this.blobs.open('images', new Types.ObjectId(id));
     if (!file) throw notFound('Image');
-    return { stream: this.bucket.openDownloadStream(file._id), mimeType: (file.metadata as any)?.mimeType ?? 'application/octet-stream', size: file.length };
+    return file;
   }
 
-  static url(id: Types.ObjectId | string) {
-    return `/api/v1/files/images/${String(id)}`;
+  /** The photo id inside any of its links (API path or Spaces URL). */
+  static idOf(url: string | null | undefined) {
+    return url?.match(/images\/([0-9a-f]{24})(?:$|[/?.])/)?.[1] ?? null;
   }
 }

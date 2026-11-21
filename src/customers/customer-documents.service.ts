@@ -1,9 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import { InjectModel } from '@nestjs/mongoose';
 import { createHmac, timingSafeEqual } from 'crypto';
-import { Connection, Model, mongo, Types } from 'mongoose';
-import { Readable } from 'stream';
+import { Model, Types } from 'mongoose';
+import { BlobStoreService } from '../files/blob-store.service';
 import { AuditService } from '../audit/audit.service';
 import { AuditAction } from '../audit/schemas/audit-log.schema';
 import { badRequest, forbidden, notFound } from '../common/errors';
@@ -14,7 +14,6 @@ import { Customer } from './schemas/customer.schema';
 
 export const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 const LINK_TTL_SECONDS = 5 * 60;
-const BUCKET = 'customer_document_files';
 
 export interface UploadedFileLike {
   buffer: Buffer;
@@ -39,18 +38,16 @@ const last4 = (n: string | null) => (n ? n.replace(/\s/g, '').slice(-4) : null);
 
 @Injectable()
 export class CustomerDocumentsService {
-  private readonly bucket: mongo.GridFSBucket;
   private readonly key: Buffer;
 
   constructor(
-    @InjectConnection() connection: Connection,
+    private readonly blobs: BlobStoreService,
     @InjectModel(CustomerDocument.name) private readonly documents: Model<CustomerDocument>,
     @InjectModel(Customer.name) private readonly customers: Model<Customer>,
     private readonly tx: TransactionService,
     private readonly audit: AuditService,
     config: ConfigService,
   ) {
-    this.bucket = new mongo.GridFSBucket(connection.db!, { bucketName: BUCKET });
     this.key = createHmac('sha256', config.getOrThrow<string>('JWT_ACCESS_SECRET')).update('customer-document-links').digest();
   }
 
@@ -61,14 +58,9 @@ export class CustomerDocumentsService {
     if (!mimeType) throw badRequest('UNSUPPORTED_FILE', 'Upload a JPG, PNG, WEBP, HEIC image or a PDF');
     if (!(await this.customers.exists({ _id: customerId }))) throw notFound('Customer');
 
-    // GridFS can't join the transaction: write the file first, remove it if the record fails.
+    // The store can't join the transaction: write the file first, remove it if the record fails.
     const fileId = new Types.ObjectId();
-    await new Promise<void>((resolve, reject) => {
-      Readable.from(file.buffer)
-        .pipe(this.bucket.openUploadStreamWithId(fileId, file.originalname, { metadata: { customerId, mimeType } }))
-        .on('finish', () => resolve())
-        .on('error', reject);
-    });
+    await this.blobs.put('documents', fileId, file.buffer, { mimeType, fileName: file.originalname, metadata: { customerId } });
     try {
       const doc = await this.tx.run(async ({ session }) => {
         const [created] = await this.documents.create(
@@ -98,7 +90,7 @@ export class CustomerDocumentsService {
       });
       return this.view(doc, user);
     } catch (err) {
-      await this.bucket.delete(fileId).catch(() => undefined);
+      await this.blobs.delete('documents', fileId);
       throw err;
     }
   }
@@ -122,7 +114,7 @@ export class CustomerDocumentsService {
       return d;
     });
     // The ID image itself is not kept once the record is removed.
-    await this.bucket.delete(doc.fileId).catch(() => undefined);
+    await this.blobs.delete('documents', doc.fileId);
     return { deleted: true };
   }
 
@@ -136,7 +128,9 @@ export class CustomerDocumentsService {
     const doc = await this.documents.findById(docId).lean();
     if (!doc) throw notFound('Document');
     await this.audit.record(AuditAction.DOCUMENT_VIEW, null, new Types.ObjectId(uid), { customerId: doc.customerId, documentId: doc._id, type: doc.type }, null);
-    return { stream: this.bucket.openDownloadStream(doc.fileId), mimeType: doc.mimeType, fileName: doc.fileName, size: doc.size };
+    const file = await this.blobs.open('documents', doc.fileId);
+    if (!file) throw notFound('Document file');
+    return { stream: file.stream, mimeType: doc.mimeType, fileName: doc.fileName, size: doc.size };
   }
 
   private view(d: { _id: unknown; type: DocumentType; number: string | null; fileName: string; mimeType: string; size: number; createdAt?: Date }, user: Principal) {

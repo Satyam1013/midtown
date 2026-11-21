@@ -87,6 +87,11 @@ export function validateEnv(config: Record<string, unknown>): EnvironmentVariabl
     const lines = errors.map((e) => `  ${e.property}: ${Object.values(e.constraints ?? {}).join(', ')}`);
     throw new Error(`Invalid environment configuration:\n${lines.join('\n')}`);
   }
+  // Spaces needs all its settings, so a typo fails at boot rather than at the first upload.
+  if (String(config.STORAGE_DRIVER ?? '').toLowerCase() === 'spaces') {
+    const missing = ['SPACES_REGION', 'SPACES_BUCKET', 'SPACES_KEY', 'SPACES_SECRET'].filter((k) => !config[k]);
+    if (missing.length) throw new Error(`STORAGE_DRIVER=spaces needs ${missing.join(', ')}`);
+  }
   if (env.NODE_ENV === NodeEnv.Production && env.OTP_PROVIDER === 'console') {
     throw new Error('OTP_PROVIDER=console is not allowed in production');
   }

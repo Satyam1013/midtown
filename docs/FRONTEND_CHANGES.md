@@ -406,6 +406,14 @@ The owner account is now `ADMIN` (it was `OWNER`). Hiding controls in the app is
 - Changing another day returns `403 PAST_DATE_RESTRICTED`. This covers `PATCH` and `DELETE /entries/:id` for an entry from another day, `PATCH /daybook/opening` for another date, and `POST /invoices` dated another day.
 - ADMIN can read any date. A closed day still can't be edited by anyone (`409 DAY_CLOSED`), so an ADMIN reopens it first.
 
+## Photos on DigitalOcean Spaces
+
+- **Uploads:** nothing changes for the apps. Uploads use the same endpoints, and every response still carries `url` / `photoUrl`.
+- **Links:** with Spaces turned on, a photo's `url` is a full CDN link (`https://midtown-media.sgp1.cdn.digitaloceanspaces.com/images/<id>`) instead of `/api/v1/files/images/<id>`.
+  - Use it as it is; don't prefix the API base URL when it already starts with `https://`.
+  - Old relative links still work and redirect.
+- **ID documents:** unchanged. They open only through the signed links from `GET /customers/:id`.
+
 ## Inventory: edit and delete stock items (manager app)
 
 - **Units:** `unit` is free text, kept exactly as sent (kg, g, litre, ml, qty, pcs, box, packet, dozen, bottle, bag, carton, can, roll, set, pair, metre …). It was never limited to a list.

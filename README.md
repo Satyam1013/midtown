@@ -60,6 +60,14 @@ Values match the front-ends' `src/data/seed.js`. **Menu veg flags and descriptio
 
 `npm run migrate:kot-dates` gives KOTs from before KOTs carried a `businessDate` the hotel-timezone date they were created on, so date-range reports count them. It is idempotent.
 
+### File storage (photos and ID documents)
+
+By default files are kept in MongoDB (GridFS). For production set `STORAGE_DRIVER=spaces` and `SPACES_ENDPOINT`, `SPACES_REGION`, `SPACES_BUCKET`, `SPACES_KEY` and `SPACES_SECRET` (see `.env.example`). The app won't start if one is missing.
+- Room and menu photos are then public files on the bucket's CDN.
+- ID documents are private objects, still opened only through the API's 5-minute signed links, and still audited.
+
+To move files already in GridFS, run `npm run migrate:images-to-spaces` with those settings. It is idempotent: it copies the files and points saved photo links at Spaces. Old `/api/v1/files/images/:id` links redirect.
+
 ### Tests
 
 `npm test` runs against the local container, in the dedicated `midtown_test` database, which it wipes. Set `TEST_MONGODB_URI` to use another replica set; the database name must end in `_test`.

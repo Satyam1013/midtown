@@ -48,7 +48,7 @@ export class MenuService {
     const item = await this.items.findById(id);
     if (!item) throw notFound('Menu item');
     const saved = await this.storage.save(file, { menuItemId: id });
-    const old = item.photoUrl?.match(/files\/images\/([0-9a-f]{24})$/)?.[1];
+    const old = ImageStorageService.idOf(item.photoUrl);
     item.photoUrl = saved.url;
     await item.save();
     if (old) await this.storage.remove(new Types.ObjectId(old));
