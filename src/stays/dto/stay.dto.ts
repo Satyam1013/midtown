@@ -77,9 +77,10 @@ export class SplitPaymentDto {
 }
 
 export class CheckInDto {
-  @ApiProperty({ type: String })
-  @IsMongoId()
-  roomId: string;
+  /** Optional with a bookingId that holds a room: that room is used. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsMongoId()
+  roomId?: string;
 
   @ApiProperty({ type: String })
   @IsString() @IsNotEmpty() @MaxLength(100)
@@ -336,4 +337,11 @@ export class BillPrintDto {
   @ApiProperty({ type: SectionAmountsDto })
   @ValidateNested() @Type(() => SectionAmountsDto)
   actualAmounts: SectionAmountsDto;
+}
+
+export class VoidStayDto {
+  /** Why the stay is being removed; kept in the audit log. */
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsString() @MaxLength(300)
+  reason?: string;
 }

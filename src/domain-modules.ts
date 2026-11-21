@@ -20,6 +20,7 @@ import { ServiceRequestsModule } from './service-requests/service-requests.modul
 import { ReportsModule } from './reports/reports.module';
 import { GuestModule } from './guest/guest.module';
 import { PublicModule } from './public/public.module';
+import { LaundryModule } from './laundry/laundry.module';
 
 export const DOMAIN_MODULES = [
   PublicModule,
@@ -44,4 +45,5 @@ export const DOMAIN_MODULES = [
   ServiceRequestsModule,
   ReportsModule,
   GuestModule,
+  LaundryModule,
 ];

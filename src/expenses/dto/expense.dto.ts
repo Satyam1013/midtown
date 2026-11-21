@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsEnum, IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsEnum, IsIn, IsMongoId, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 import { DateQueryDto, IsBusinessDate, IsClockTime, IsDecimal } from '../../common/dto/common.dto';
 import { PaymentMode } from '../../common/enums';
 
@@ -43,6 +43,49 @@ export class CreateExpenseDto {
   @IsOptional() @IsBusinessDate()
   @ApiPropertyOptional({ type: String })
   dueDate?: string;
+
+  /** Required when head is "Salary advance": the staff member paid. */
+  @IsOptional() @IsMongoId()
+  @ApiPropertyOptional({ type: String, nullable: true })
+  staffId?: string | null;
+}
+
+/** PATCH /expenses/:id. A missing field is left as it is. */
+export class UpdateExpenseDto {
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(60)
+  @ApiPropertyOptional({ type: String })
+  head?: string;
+
+  @IsOptional() @IsString() @MaxLength(100)
+  @ApiPropertyOptional({ type: String })
+  vendor?: string;
+
+  @IsOptional() @IsMongoId()
+  @ApiPropertyOptional({ type: String, nullable: true })
+  staffId?: string | null;
+
+  @IsOptional() @IsDecimal({ positive: true })
+  @ApiPropertyOptional({ type: String })
+  amount?: string;
+
+  @IsOptional() @IsString() @MaxLength(300)
+  @ApiPropertyOptional({ type: String })
+  narration?: string;
+
+  /** Paid-now expenses only. */
+  @IsOptional() @IsEnum(PaymentMode)
+  @ApiPropertyOptional({ enum: PaymentMode })
+  mode?: PaymentMode;
+
+  /** Credit expenses only; null clears it. */
+  @IsOptional() @IsBusinessDate()
+  @ApiPropertyOptional({ type: String, nullable: true })
+  dueDate?: string | null;
+
+  /** Can't change; accepted when it matches so a form can send the whole expense. */
+  @IsOptional() @IsBoolean()
+  @ApiPropertyOptional({ type: Boolean })
+  onCredit?: boolean;
 }
 
 export class ExpenseListQueryDto extends DateQueryDto {

@@ -1,4 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import { AuditService } from '../audit/audit.service';
+import { AuditAction } from '../audit/schemas/audit-log.schema';
+import { Staff } from '../staff/schemas/staff.schema';
 import { InjectModel } from '@nestjs/mongoose';
 import { ClientSession, Model, Types } from 'mongoose';
 import { badRequest, conflict, notFound } from '../common/errors';
@@ -24,7 +27,11 @@ import { withStayLabels } from '../stays/stay-labels';
 import { KotItemDto, KotQueryDto, SettleBillDto } from './dto/kot.dto';
 import { Kot, KotBillTo, KotSource, KotStatus } from './schemas/kot.schema';
 
-const STATUS_ORDER = [KotStatus.PLACED, KotStatus.PREPARING, KotStatus.ON_THE_WAY, KotStatus.SERVED];
+const STATUS_ORDER = [KotStatus.PLACED, KotStatus.PREPARING, KotStatus.READY, KotStatus.ON_THE_WAY, KotStatus.SERVED];
+const CLOSED = [KotStatus.SERVED, KotStatus.CANCELLED];
+
+/** The short number printed on the ticket, e.g. K-0042. */
+export const kotLabel = (n: number) => `K-${String(n).padStart(4, '0')}`;
 
 export interface PlaceKot {
   stayId: Types.ObjectId | null;
@@ -52,16 +59,32 @@ export class KotsService {
     private readonly dates: BusinessDateService,
     private readonly events: EventsService,
     private readonly gst: GstService,
+    private readonly audit: AuditService,
+    @InjectModel(Staff.name) private readonly staffModel: Model<Staff>,
   ) {}
 
+  /**
+   * Newest first. One business day: `date`, else the open day (else today); an
+   * ADMIN asking for one stay's KOTs gets every day. Non-admins are held to the
+   * open day by @OpenDayOnly before this runs.
+   */
   async list(q: KotQueryDto) {
     const { page, limit, skip } = pageOf(q);
-    const filter = q.status ? { status: q.status } : {};
+    const filter: Record<string, unknown> = {};
+    if (q.status) filter.status = q.status;
+    if (q.stayId) filter.stayId = new Types.ObjectId(q.stayId);
+    if (q.date || !q.stayId) filter.businessDate = q.date ?? (await this.daybook.openDate()) ?? this.dates.today();
     const [items, total] = await Promise.all([
-      this.kots.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      this.kots.find(filter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).lean(),
       this.kots.countDocuments(filter),
     ]);
-    const rows = await withStayLabels(this.stays, items);
+    const waiters = await this.staffModel.find({ _id: { $in: items.map((k) => k.waiterId).filter(Boolean) } }).select('name').lean();
+    const waiterName = new Map(waiters.map((w) => [String(w._id), w.name]));
+    const rows = (await withStayLabels(this.stays, items)).map((k) => ({
+      ...k,
+      displayNumber: kotLabel(k.number),
+      waiterName: k.waiterId ? (waiterName.get(String(k.waiterId)) ?? null) : null,
+    }));
     return new Paged(rows, { page, limit, total });
   }
 
@@ -88,10 +111,12 @@ export class KotsService {
       const lines = await this.priceItems(input.items, session);
       const bill = this.gst.food(sum(lines.map((l) => dec(l.price).times(l.qty))));
       const number = await this.counters.next('kot', session);
+      const businessDate = (await this.daybook.openDate()) ?? this.dates.today();
       const [kot] = await this.kots.create(
         [
           {
             number,
+            businessDate,
             stayId: input.stayId,
             tableLabel: input.tableLabel || null,
             items: lines,
@@ -142,15 +167,47 @@ export class KotsService {
     });
   }
 
-  async setStatus(id: Types.ObjectId, status: KotStatus) {
-    const current = await this.kots.findById(id).select('status').lean();
-    if (!current) throw notFound('KOT');
-    if (STATUS_ORDER.indexOf(status) <= STATUS_ORDER.indexOf(current.status)) {
-      throw conflict('INVALID_KOT_STATUS', `A ${current.status} KOT can't move to ${status}`);
-    }
-    // Conditional on the status just read, so a concurrent move can't be overwritten.
-    const kot = await this.kots.findOneAndUpdate({ _id: id, status: current.status }, { $set: { status } }, { new: true });
-    if (!kot) throw conflict('INVALID_KOT_STATUS', 'This KOT was just updated, please refresh');
+  /**
+   * Forward only (PLACED → PREPARING → READY → ON_THE_WAY → SERVED, steps may be
+   * skipped), or CANCELLED from anything not yet served. SERVED and CANCELLED are
+   * final: 409 KOT_CLOSED. Cancelling a ROOM KOT removes its folio charge; a paid
+   * PAY_NOW KOT can't be cancelled (409 KOT_SETTLED: refund it instead).
+   */
+  async setStatus(id: Types.ObjectId, status: KotStatus, user: Principal) {
+    const kot = await this.tx.run(async ({ session }) => {
+      const k = await this.kots.findById(id).session(session);
+      if (!k) throw notFound('KOT');
+      const from = k.status;
+      if (CLOSED.includes(from)) throw conflict('KOT_CLOSED', `This KOT is ${from.toLowerCase()} and can no longer change`);
+      if (status !== KotStatus.CANCELLED && STATUS_ORDER.indexOf(status) <= STATUS_ORDER.indexOf(from)) {
+        throw conflict('INVALID_KOT_STATUS', `A ${from} KOT can't move to ${status}`);
+      }
+      let folioRemoved: unknown = null;
+      if (status === KotStatus.CANCELLED) {
+        if (k.billTo === KotBillTo.PAY_NOW && k.settledAt) {
+          throw conflict('KOT_SETTLED', 'This KOT has been paid; refund it instead of cancelling');
+        }
+        if (k.billTo === KotBillTo.ROOM && k.stayId) {
+          const stay = await this.stays.findById(k.stayId).select('status').session(session).lean();
+          if (stay && stay.status !== StayStatus.IN_HOUSE) {
+            throw conflict('KOT_BILLED', 'The guest has checked out; this charge is on a closed bill');
+          }
+          const line = await this.folio.findOneAndUpdate({ kotId: k._id }, { $set: { deletedAt: new Date() } }, { session });
+          folioRemoved = line?.amount ?? null;
+        }
+      }
+      k.status = status;
+      await k.save({ session });
+      await this.audit.record(
+        AuditAction.KOT_STATUS,
+        k.stayId ?? null,
+        userObjectId(user),
+        { kotId: String(k._id), number: k.number, from, to: status, billTo: k.billTo, total: k.total, folioRemoved },
+        session,
+        k.businessDate ?? null,
+      );
+      return k;
+    });
     const payload = { id: String(kot._id), number: kot.number, status: kot.status };
     if (kot.stayId) this.events.toHotelAndStay('kot.updated', kot.stayId, payload);
     else this.events.toHotel('kot.updated', payload);
@@ -167,6 +224,7 @@ export class KotsService {
       for (const kot of kots) {
         if (kot.billTo !== KotBillTo.PAY_NOW) throw conflict('KOT_ON_ROOM_BILL', `KOT #${kot.number} is on the room bill`);
         if (kot.settledAt) throw conflict('KOT_ALREADY_SETTLED', `KOT #${kot.number} is already settled`);
+        if (kot.status === KotStatus.CANCELLED) throw conflict('KOT_CANCELLED', `KOT #${kot.number} was cancelled`);
       }
 
       const total = sum(kots.map((k) => k.total));

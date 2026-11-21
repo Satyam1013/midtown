@@ -40,10 +40,10 @@ export class BusinessDateService {
     return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === date;
   }
 
-  /** Not in the future and at most seven days back; OWNER may override both. */
+  /** Not in the future and at most seven days back; ADMIN may override both. */
   assertAllowed(date: string, user: Principal): void {
     if (!this.isRealDate(date)) throw badRequest('INVALID_DATE', 'Business date must be a real YYYY-MM-DD date');
-    if (user.role === Role.OWNER) return;
+    if (user.role === Role.ADMIN) return;
     const today = this.today();
     if (date > today) throw badRequest('FUTURE_DATE', 'Business date cannot be in the future');
     if (date < this.addDays(today, -MAX_DAYS_BACK)) {

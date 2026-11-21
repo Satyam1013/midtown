@@ -4,11 +4,13 @@ import { UploadedFileLike } from '../customers/customer-documents.service';
 import { MAX_IMAGE_BYTES } from '../files/image-storage.service';
 import { ApiBearerAuth, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { Types } from 'mongoose';
-import { CurrentUser, Roles } from '../common/decorators';
+import { AdminOnly, CurrentUser, Roles } from '../common/decorators';
 import { Principal } from '../common/interfaces/principal';
 import { ALL_STAFF, DESK, MANAGEMENT } from '../common/enums';
 import { ParseObjectIdPipe } from '../common/pipes/parse-object-id.pipe';
-import { CreateRoomDto, MaintenanceHistoryQueryDto, SetRoomStatusDto, UpdateRoomDto } from './dto/room.dto';
+import { AvailableRoomsQueryDto, CreateRoomDto, MaintenanceHistoryQueryDto, SetRoomStatusDto, UpdateRoomDto } from './dto/room.dto';
+import { RoomHoldsService } from './room-holds.service';
+import { badRequest } from '../common/errors';
 import { RoomsService } from './rooms.service';
 
 @ApiTags('Rooms')
@@ -16,7 +18,18 @@ import { RoomsService } from './rooms.service';
 @Roles(...DESK)
 @Controller('rooms')
 export class RoomsController {
-  constructor(private readonly rooms: RoomsService) {}
+  constructor(
+    private readonly rooms: RoomsService,
+    private readonly holds: RoomHoldsService,
+  ) {}
+
+  /** Rooms that can be booked for [from, to): free of stays, bookings, maintenance and out of order. */
+  @Roles(...ALL_STAFF)
+  @Get('available')
+  available(@Query() q: AvailableRoomsQueryDto) {
+    if (q.to <= q.from) throw badRequest('INVALID_DATES', 'Departure must be after arrival');
+    return this.holds.available(q);
+  }
 
   @Roles(...MANAGEMENT)
   @Get('maintenance-history')
@@ -36,8 +49,8 @@ export class RoomsController {
     return this.rooms.one(id);
   }
 
-  /** One photo per call (multipart, field "file"): JPG, PNG or WEBP, up to 5 MB. */
-  @Roles(...MANAGEMENT)
+  /** One photo per call (multipart, field "file"): JPG, PNG or WEBP, up to 5 MB. ADMIN only. */
+  @AdminOnly()
   @ApiConsumes('multipart/form-data')
   @Post(':id/images')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_IMAGE_BYTES, files: 1 } }))
@@ -45,13 +58,13 @@ export class RoomsController {
     return this.rooms.addImage(id, file);
   }
 
-  @Roles(...MANAGEMENT)
+  @AdminOnly()
   @Delete(':id/images/:imageId')
   removeImage(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @Param('imageId', ParseObjectIdPipe) imageId: Types.ObjectId) {
     return this.rooms.removeImage(id, imageId);
   }
 
-  @Roles(...MANAGEMENT)
+  @AdminOnly()
   @Post()
   create(@Body() dto: CreateRoomDto) {
     return this.rooms.create(dto);
@@ -63,11 +76,21 @@ export class RoomsController {
     return this.rooms.markAllClean();
   }
 
-  /** Category, type and prices; stays already in progress keep their rate. */
-  @Roles(...MANAGEMENT)
+  /** Category, type, prices and details; stays already in progress keep their rate. ADMIN only. */
+  @AdminOnly()
   @Patch(':id')
   update(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @Body() dto: UpdateRoomDto, @CurrentUser() user: Principal) {
     return this.rooms.update(id, dto, user);
+  }
+
+  /**
+   * ADMIN only. 409 ROOM_IN_USE while a guest is in the room. A room with history
+   * is soft-deleted (hidden, old records keep its number); otherwise removed.
+   */
+  @AdminOnly()
+  @Delete(':id')
+  remove(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @CurrentUser() user: Principal) {
+    return this.rooms.remove(id, user);
   }
 
   @Patch(':id/status')

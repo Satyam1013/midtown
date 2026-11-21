@@ -7,7 +7,7 @@ const rooms: Record<string, string> = {};
 beforeAll(async () => {
   ctx = await bootApp();
   for (const number of ['501', '502', '503', '504']) {
-    const res = await ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.MANAGER))
+    const res = await ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.ADMIN))
       .send({ number, floor: 5, category: 'AC', roomType: 'AC Standard', singleRate: '1000.00', doubleRate: '1500.00' })
       .expect(201);
     rooms[number] = res.body.data.id;

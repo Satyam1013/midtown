@@ -4,7 +4,11 @@ import Decimal from 'decimal.js';
 import { ClientSession, Model, Types } from 'mongoose';
 import { AuditService } from '../audit/audit.service';
 import { AuditAction } from '../audit/schemas/audit-log.schema';
-import { Booking, BookingStatus } from '../bookings/schemas/booking.schema';
+import { Booking, BookingSource, BookingStatus } from '../bookings/schemas/booking.schema';
+import { Kot, KotBillTo } from '../kots/schemas/kot.schema';
+import { RoomHoldsService } from '../rooms/room-holds.service';
+import { LaundryOrder } from '../laundry/schemas/laundry-order.schema';
+import { Customer } from '../customers/schemas/customer.schema';
 import { DebitCredit, PaymentMode } from '../common/enums';
 import { badRequest, conflict, notFound } from '../common/errors';
 import { Principal, userObjectId } from '../common/interfaces/principal';
@@ -19,6 +23,7 @@ import { DaybookService } from '../daybook/daybook.service';
 import { TransactionService } from '../database/transaction.service';
 import { LedgerService } from '../entries/ledger.service';
 import { DayRegisterEntry, EntrySource } from '../entries/schemas/day-register-entry.schema';
+import { sourceOf } from '../daybook/daybook.service';
 import { Settlement } from './schemas/settlement.schema';
 import { settlementRow } from './settlement-row';
 import { FolioService } from '../folio/folio.service';
@@ -90,7 +95,127 @@ export class StaysService {
     private readonly creditLedger: CustomerCreditService,
     @InjectModel(Settlement.name) private readonly settlements: Model<Settlement>,
     @InjectModel(DayRegisterEntry.name) private readonly entries: Model<DayRegisterEntry>,
+    @InjectModel(Kot.name) private readonly kots: Model<Kot>,
+    @InjectModel(Customer.name) private readonly customerModel: Model<Customer>,
+    private readonly holds: RoomHoldsService,
+    @InjectModel(LaundryOrder.name) private readonly laundryOrders: Model<LaundryOrder>,
   ) {}
+
+  /**
+   * DELETE /stays/:id: voids an in-house stay created by mistake, in one transaction.
+   *  - money taken for it (advance, part payment, refund) is undone: a line on the
+   *    open day is voided with its cash line; one on an earlier day is left as it is
+   *    and an opposite line linked to it (reversalOf) is posted on the open day
+   *  - a settled bill (paid KOT, service paid at the desk) refuses: 409 STAY_HAS_PAYMENTS
+   *  - folio lines, open service requests and unpaid KOTs are voided
+   *  - the room goes back to VACANT; the booking's room is freed (a walk-in's own booking is voided)
+   *  - the stay is CANCELLED and soft-deleted, so lists and reports drop it; the audit log keeps it
+   */
+  async voidStay(id: Types.ObjectId, user: Principal, reason?: string) {
+    const PAYMENT_SOURCES = [EntrySource.CHECKIN, EntrySource.STAY_PAYMENT, EntrySource.REFUND];
+    const done = await this.tx.run(async ({ session, afterCommit }) => {
+      const stay = await this.stays.findById(id).session(session);
+      if (!stay) throw notFound('Stay');
+      if (stay.status !== StayStatus.IN_HOUSE) throw conflict('STAY_CLOSED', 'This stay has checked out; it can no longer be deleted');
+
+      const paidKot = await this.kots.exists({ stayId: id, billTo: KotBillTo.PAY_NOW, settledAt: { $ne: null } }).session(session);
+      const lines = await this.entries.find({ stayId: id }).session(session);
+      const settled = lines.filter((e) => !PAYMENT_SOURCES.includes(sourceOf(e)) && dec(e.amount).gt(0));
+      if (paidKot || settled.length) {
+        throw conflict('STAY_HAS_PAYMENTS', 'A bill of this stay has been paid. Check the guest out and refund instead.');
+      }
+
+      const openDate = await this.daybook.openDate();
+      const room = await this.rooms.findById(stay.roomId).session(session);
+      const voided: string[] = [];
+      const reversals: { of: string; id: string }[] = [];
+      for (const entry of lines) {
+        if (entry.businessDate === openDate || dec(entry.amount).isZero()) {
+          await this.ledger.softDelete(entry, session);
+          voided.push(String(entry._id));
+          continue;
+        }
+        // Earlier (closed) days are never edited: undo the money on the open day instead.
+        const businessDate = await this.daybook.requireOpenDay(session);
+        const reversal = await this.ledger.post(
+          {
+            businessDate,
+            time: this.dates.nowTime(),
+            roomId: entry.roomId,
+            stayId: stay._id,
+            guestName: entry.guestName,
+            phone: entry.phone,
+            vehicle: entry.vehicle,
+            type: 'Stay voided',
+            mode: entry.mode,
+            dc: entry.dc === DebitCredit.CREDIT ? DebitCredit.DEBIT : DebitCredit.CREDIT,
+            amount: entry.amount.toString(),
+            narration: `Reverses ${entry.type} of ${entry.businessDate}: stay deleted${reason ? ` (${reason})` : ''}`,
+            source: entry.dc === DebitCredit.CREDIT ? EntrySource.REFUND : EntrySource.STAY_PAYMENT,
+            createdByUserId: userObjectId(user),
+            dupCheck: false,
+          },
+          session,
+        );
+        await this.entries.updateOne({ _id: reversal._id }, { $set: { reversalOf: entry._id } }, { session });
+        reversals.push({ of: String(entry._id), id: String(reversal._id) });
+      }
+
+      const now = new Date();
+      await this.folioLines.updateMany({ stayId: id }, { $set: { deletedAt: now } }, { session });
+      await this.requests.updateMany({ stayId: id, status: { $nin: CLOSED_REQUEST_STATUSES } }, { $set: { deletedAt: now } }, { session });
+      await this.kots.updateMany({ stayId: id }, { $set: { deletedAt: now } }, { session });
+      // Laundry not yet delivered is cancelled; a delivered PAY_NOW order was a paid bill (refused above).
+      await this.laundryOrders.updateMany(
+        { stayId: id, status: { $nin: ['DELIVERED', 'CANCELLED'] } },
+        { $set: { status: 'CANCELLED', cancelledAt: now, liveRequestId: null } },
+        { session },
+      );
+
+      if (room && room.status === RoomStatus.OCCUPIED) {
+        room.status = RoomStatus.VACANT;
+        await room.save({ session });
+      }
+      if (stay.bookingId) {
+        const booking = await this.bookings.findById(stay.bookingId).session(session);
+        if (booking && booking.source === BookingSource.WalkIn && !booking.roomLines.length && /^WI\d+$/.test(booking.ref ?? '')) {
+          booking.set('deletedAt', now); // the walk-in booking made for this stay alone
+          await booking.save({ session });
+        } else if (booking) {
+          for (const line of booking.roomLines) if (String(line.stayId) === String(id)) line.stayId = null;
+          const othersIn = await this.stays.exists({ bookingId: booking._id, _id: { $ne: id } }).session(session);
+          if (!othersIn && booking.status === BookingStatus.CHECKED_IN) booking.status = BookingStatus.CONFIRMED;
+          await booking.save({ session });
+        }
+      }
+
+      // The visit never happened.
+      if (stay.customerId) await this.customerModel.updateOne({ _id: stay.customerId, visits: { $gt: 0 } }, { $inc: { visits: -1 } }, { session });
+
+      stay.status = StayStatus.CANCELLED;
+      stay.deletedByUserId = userObjectId(user);
+      stay.voidReason = reason?.trim() || null;
+      stay.set('deletedAt', now);
+      await stay.save({ session });
+      // The freed booking may hold this room again today.
+      await this.holds.sync([stay.roomId], session, afterCommit);
+      await this.audit.record(
+        AuditAction.STAY_VOID,
+        stay._id,
+        userObjectId(user),
+        { roomId: String(stay.roomId), roomNumber: room?.number ?? null, guestName: stay.guestName, checkIn: stay.checkIn, reason: stay.voidReason, voidedEntries: voided, reversals },
+        session,
+        openDate,
+      );
+      afterCommit(() => {
+        this.events.toHotel('stay.voided', { stayId: String(id), roomId: String(stay.roomId) });
+        if (room) this.events.toHotel('room.status.changed', { roomId: String(room._id), status: room.status });
+        for (const r of reversals) this.events.toHotel('entry.created', { id: r.id, businessDate: openDate });
+      });
+      return true;
+    });
+    return done;
+  }
 
   async checkIn(dto: CheckInDto, user: Principal) {
     const checkIn = dto.businessDate ?? this.dates.today();
@@ -98,16 +223,28 @@ export class StaysService {
     const { checkOut, nights } = this.stayLength(checkIn, dto.checkOut, dto.nights);
 
     const stayId = await this.tx.run(async ({ session, afterCommit }) => {
-      // The status flip is the lock: of two simultaneous check-ins only one can match VACANT.
+      // A prebooked guest goes into the booking's room unless the desk picked another.
+      const booking = dto.bookingId ? await this.bookings.findById(dto.bookingId).select('roomId roomLines').session(session).lean() : null;
+      if (dto.bookingId && !booking) throw notFound('Booking');
+      const roomId = dto.roomId ?? (booking?.roomId ? String(booking.roomId) : null);
+      if (!roomId) throw badRequest('ROOM_REQUIRED', 'Choose the room to check the guest into');
+      dto.roomId = roomId;
+      const ownHold = !!booking?.roomId && String(booking.roomId) === roomId;
+      // The status flip is the lock: of two simultaneous check-ins only one can match.
+      // A PREBOOKED room takes only the guest it is held for.
       const room = await this.rooms.findOneAndUpdate(
-        { _id: dto.roomId, status: RoomStatus.VACANT },
+        { _id: roomId, status: { $in: ownHold ? [RoomStatus.VACANT, RoomStatus.PREBOOKED] : [RoomStatus.VACANT] } },
         { $set: { status: RoomStatus.OCCUPIED } },
         { new: true, session },
       );
       if (!room) {
-        if (!(await this.rooms.exists({ _id: dto.roomId }).session(session))) throw notFound('Room');
+        const current = await this.rooms.findById(roomId).select('status number').session(session).lean();
+        if (!current) throw notFound('Room');
+        if (current.status === RoomStatus.PREBOOKED) throw conflict('ROOM_NOT_AVAILABLE', `Room ${current.number} is held for a booking arriving today`);
         throw conflict('ROOM_NOT_VACANT', 'This room is not vacant');
       }
+      // Nights that another booking holds this room for are not free either.
+      await this.holds.assertNoClash(room._id, room.number, checkIn, checkOut, dto.bookingId ?? null, session);
       // Any rate the app sent is ignored. A booked room is charged what was booked
       // (later tariff changes don't apply); a walk-in is charged the room's own prices.
       const { guests, rate, lineId } = await this.checkInRate(room, dto, session);
@@ -169,7 +306,10 @@ export class StaysService {
         );
       }
       if (dto.bookingId) {
-        await this.bookings.updateOne({ _id: dto.bookingId }, { $set: { status: BookingStatus.CHECKED_IN } }, { session });
+        // The booking now holds the room the guest is in; a room it held before is released.
+        const oneRoom = (booking?.roomLines?.length ?? 0) <= 1;
+        await this.bookings.updateOne({ _id: dto.bookingId }, { $set: { status: BookingStatus.CHECKED_IN, ...(oneRoom ? { roomId: room._id } : {}) } }, { session });
+        if (booking?.roomId && !ownHold) await this.holds.sync([booking.roomId], session, afterCommit);
         if (lineId) {
           // Claims the line; a check-in racing for the same line conflicts and is retried with the next one.
           const claimed = await this.bookings.updateOne(
@@ -406,6 +546,7 @@ export class StaysService {
         if (!(await this.rooms.exists({ _id: dto.toRoomId }).session(session))) throw notFound('Room');
         throw conflict('ROOM_NOT_VACANT', 'The new room is not vacant');
       }
+      await this.holds.assertNoClash(target._id, target.number, dto.businessDate, stay.checkOut, stay.bookingId, session);
       const from = await this.rooms.findByIdAndUpdate(stay.roomId, { $set: { status: RoomStatus.DIRTY } }, { new: true, session });
 
       const segments = await this.segmentsOf(stay, session);
@@ -691,7 +832,7 @@ export class StaysService {
     const settlement = await this.settlements.findOne({ stayId }).lean();
     const ledgerRows = await this.entries.find({ settlementId: settlement?._id ?? null }).sort({ createdAt: 1 }).lean();
     const bill = await this.folio.summary(stayId);
-    const room = settlement ? await this.rooms.findById(settlement.roomId).select('number').lean() : null;
+    const room = settlement ? await this.rooms.findById(settlement.roomId).select('number').setOptions({ withDeleted: true }).lean() : null;
     return {
       stay: await this.present(stayId),
       settlement: settlement ? settlementRow(settlement, room?.number ?? null) : null,
@@ -706,7 +847,7 @@ export class StaysService {
 
   async inHouse() {
     const stays = await this.stays.find({ status: StayStatus.IN_HOUSE }).sort({ checkIn: 1 }).lean();
-    const rooms = await this.rooms.find({ _id: { $in: stays.map((s) => s.roomId) } }).lean();
+    const rooms = await this.rooms.find({ _id: { $in: stays.map((s) => s.roomId) } }).setOptions({ withDeleted: true }).lean();
     const balances = await this.folio.balances(stays.map((s) => s._id));
     const roomById = new Map(rooms.map((r) => [String(r._id), r]));
     const decorated = await this.view.decorate(stays);
@@ -758,7 +899,7 @@ export class StaysService {
     if (stay.roomCharges?.length) {
       return stay.roomCharges.map((s: any) => (typeof s.toObject === 'function' ? s.toObject() : { ...s }));
     }
-    const room = await this.rooms.findById(stay.roomId).select('number').session(session).lean();
+    const room = await this.rooms.findById(stay.roomId).select('number').setOptions({ withDeleted: true }).session(session).lean();
     const line = await this.folioLines.findOne({ stayId: stay._id, source: FolioSource.TARIFF }).session(session).lean();
     return [
       {

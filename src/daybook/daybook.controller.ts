@@ -1,6 +1,7 @@
 import { Body, Controller, Get, HttpCode, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { CurrentUser, Roles } from '../common/decorators';
+import { CurrentUser, OpenDayOnly, Roles } from '../common/decorators';
+import { noRows, noValue } from './open-day.empty';
 import { DESK, MANAGEMENT, Role } from '../common/enums';
 import { Principal } from '../common/interfaces/principal';
 import { DaybookService } from './daybook.service';
@@ -21,6 +22,7 @@ export class DaybookController {
   constructor(private readonly daybook: DaybookService) {}
 
   @Roles(...DESK)
+  @OpenDayOnly({ query: ['date'], empty: noValue })
   @Get()
   get(@Query() q: DateOnlyQueryDto) {
     return this.daybook.get(q.date);
@@ -28,18 +30,21 @@ export class DaybookController {
 
   /** Every money line of the business day, entries and expenses together. */
   @Roles(...DESK)
+  @OpenDayOnly({ query: ['date'], empty: noRows })
   @Get('register')
   register(@Query() q: DateOnlyQueryDto) {
     return this.daybook.register(q.date);
   }
 
   @Roles(...MANAGEMENT)
+  @OpenDayOnly({ query: ['from', 'to'], empty: () => ({ days: [], entries: [] }) })
   @Get('shortages')
   shortages(@Query() q: DateRangeQueryDto) {
     return this.daybook.shortages(q.from, q.to);
   }
 
   @Roles(...MANAGEMENT)
+  @OpenDayOnly({ body: 'businessDate' })
   @Patch('opening')
   setOpening(@Body() dto: SetOpeningDto, @CurrentUser() user: Principal) {
     return this.daybook.setOpening(dto.businessDate, dto.openingBalance, user, dto.note);
@@ -80,7 +85,7 @@ export class BusinessDayController {
     return this.daybook.close(dto, user);
   }
 
-  @Roles(Role.OWNER)
+  @Roles(Role.ADMIN)
   @HttpCode(200)
   @Post('reopen')
   reopen(@Body() dto: ReopenBusinessDayDto, @CurrentUser() user: Principal) {

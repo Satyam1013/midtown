@@ -50,9 +50,15 @@ If port 27017 is taken, set `MONGO_HOST_PORT` and use that port in the URI.
 
 ### Seed
 
-Upserts 4 room types, 18 rooms, 16 menu items, 6 staff, 8 stock items and the OWNER from `OWNER_*`, in one transaction. Existing documents are never overwritten, so re-running keeps the hotel's edits; it also means changed `OWNER_*` values won't update an existing owner.
+Upserts 4 room types, 18 rooms, 16 menu items, 6 staff, 8 stock items and the ADMIN from `OWNER_*`, in one transaction. Existing documents are never overwritten, so re-running keeps the hotel's edits; it also means changed `OWNER_*` values won't update an existing owner.
 
 Values match the front-ends' `src/data/seed.js`. **Menu veg flags and descriptions aren't in either repo and still need confirming with the hotel.**
+
+### Roles migration
+
+`npm run migrate:roles` turns the stored `OWNER` role into `ADMIN` and gives any user without a known role `MANAGER`. It is idempotent. Until it runs, `OWNER` is read as `ADMIN`.
+
+`npm run migrate:kot-dates` gives KOTs from before KOTs carried a `businessDate` the hotel-timezone date they were created on, so date-range reports count them. It is idempotent.
 
 ### Tests
 
@@ -69,13 +75,17 @@ Values match the front-ends' `src/data/seed.js`. **Menu veg flags and descriptio
 
 Send `Authorization: Bearer <token>`. Guest routes take no ids: the stay always comes from the token.
 
+Staff roles are `ADMIN` (the owner), `MANAGER`, `STAFF` and `KITCHEN`. The role is read from the user record on every request and must match the token's `role` claim. Room create, edit, images and delete, and room-type tariffs, are `ADMIN` only (`403 FORBIDDEN "Admin access required"`). Non-admin staff see and change only the open business day in the day book, register, entries, expenses, invoices, online orders and reports (`403 PAST_DATE_RESTRICTED`). See `docs/FRONTEND_CHANGES.md`, "Roles: ADMIN and MANAGER".
+
+Date-range reports: `GET /reports/summary?from=&to=` and `GET /reports/entries?from=&to=&category=&page=&limit=` (ADMIN any range up to 366 days, MANAGER the open day only). See `docs/FRONTEND_CHANGES.md`, "Date-range reports".
+
 Responses are `{ data, meta }` and errors `{ statusCode, code, message }`. Login and refresh also repeat their tokens at the top level, because the manager app reads them there.
 
 ## Business rules
 
 - **No double entries:** `POST /entries` answers `409 DUPLICATE_ENTRY` with `entryId`; a unique index covers simultaneous submissions.
 - **Atomic money:** entry, cash line and folio line go through `TransactionService.run()`. Socket events fire only after commit.
-- **Business day (shift):** money is posted only while a business day is open, and only one can be open at a time. Its `businessDate` is chosen at `POST /business-day/start`, not taken from the clock, so a shift can run past midnight. Every posting is stamped with the open day's date, and any date the app sends is ignored; with no open day it's `409 DAY_NOT_OPEN`. Close with `POST /business-day/close` and a cash count: closing = opening + credits − debits (all modes), expected cash = opening + net CASH movements, shortage = expected − counted, and a note is required for any difference. A closed day can't be edited by anyone; only the OWNER can reopen it.
+- **Business day (shift):** money is posted only while a business day is open, and only one can be open at a time. Its `businessDate` is chosen at `POST /business-day/start`, not taken from the clock, so a shift can run past midnight. Every posting is stamped with the open day's date, and any date the app sends is ignored; with no open day it's `409 DAY_NOT_OPEN`. Close with `POST /business-day/close` and a cash count: closing = opening + credits − debits (all modes), expected cash = opening + net CASH movements, shortage = expected − counted, and a note is required for any difference. A closed day can't be edited by anyone; only the ADMIN can reopen it.
 - **Customers:** one per phone (last 10 digits, unique), found or created at check-in and when a guest is added. ID documents are stored privately in the MongoDB GridFS bucket `customer_document_files` and served only through 5-minute signed links; responses show only the last 4 digits of an ID number. Uploads, views and deletes are audit-logged.
 - **Guest app:** sign-in is by phone and OTP, and the token names the customer, not a stay. A customer sees every booking linked to them: ones they made signed in, and ones made at the desk or publicly with their phone. Every stay belongs to a booking (a walk-in gets a one-room booking at check-in). Orders, requests and check-out requests name the room (`stayId`/`stayIds`), which must be the customer's and checked in.
 - **GST:** set on the server (`src/common/services/gst.service.ts`, overridable by env): rooms 5% up to ₹7,500/night and 18% above, food 5%, other services 18%, added on top (`GST_TAX_INCLUSIVE=false`). Every charge line stores its taxable value, CGST and SGST (always equal). A stay keeps the GST mode it checked in with; stays from before this keep 12% on top.
@@ -83,7 +93,7 @@ Responses are `{ data, meta }` and errors `{ statusCode, code, message }`. Login
 - **Register:** `GET /daybook/register` lists every money line of a business day (entries and expenses) with its `source`; its totals equal `/daybook`'s. Only `MANUAL` entries are edited through `/entries`. At checkout, money still owed is stored as the settlement line's `shortfall` and stays on the folio.
 - **Room status:** check-in → OCCUPIED, check-out → DIRTY, housekeeping → VACANT; manual changes only to and from OOO.
 - **GST:** rooms 12%, food 5%, calculated on the server from database prices, to the paisa.
-- **Business date:** `YYYY-MM-DD`. For money it's the open business day's date. Attendance and invoices still take the app's date: at most 7 days old and not in the future, unless OWNER.
+- **Business date:** `YYYY-MM-DD`. For money it's the open business day's date. Attendance still takes the app's date: at most 7 days old and not in the future, unless ADMIN. Invoices take the open day for non-admins; an ADMIN may date them freely.
 - **Room pricing:** each room has a category (`AC` / `NON_AC`), a single and a double rate. Nightly rate: 1 guest → single, 2 → double, 3–4 → double + ₹300 per extra guest (`EXTRA_GUEST_CHARGE` in `src/config/pricing.ts`). The server always works the rate out; a rate sent by an app is ignored.
 - **Room charges:** a stay is billed in segments (`roomCharges[]`), each one TARIFF folio line of rate × nights + 12% GST. A guest-count change or a room shift ends the current segment, so earlier nights keep their price.
 - **Room shift:** only in answer to a guest's `ROOM_SHIFT` service request, via `POST /stays/:id/shift`. It moves the stay, swaps room statuses, adjusts the folio and closes the request in one transaction, with no day-book entry. Shifts and guest-count changes are written to `audit_logs`.

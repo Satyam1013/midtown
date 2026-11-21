@@ -16,7 +16,7 @@ const mgr = () => bearer(ctx.token.MANAGER);
 const staff = () => bearer(ctx.token.STAFF);
 const blank = { beds: '', blurb: '', size: '', sizeSqft: null, sleeps: null, additionalGuestPrice: null };
 const create = (number: string, extra: object) =>
-  ctx.api().post(`${V1}/rooms`).set(mgr()).send({ number, floor: 7, category: 'AC', roomType: 'AC Standard', singleRate: '1000', doubleRate: '1500', ...blank, ...extra });
+  ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.ADMIN)).send({ number, floor: 7, category: 'AC', roomType: 'AC Standard', singleRate: '1000', doubleRate: '1500', ...blank, ...extra });
 const getRoom = async (n: string) => (await ctx.api().get(`${V1}/rooms/${rooms[n]}`).set(staff()).expect(200)).body.data;
 const checkIn = (n: string, guests: number) =>
   ctx.api().post(`${V1}/stays`).set(staff()).send({ roomId: rooms[n], guestName: `Guest ${n}`, phone: `98555007${n.slice(-2)}`, guests, nights: 2 });
@@ -26,9 +26,9 @@ describe('Room details', () => {
     const res = await create('701', { beds: '1 King bed', blurb: 'Quiet corner room', size: '22 sq m', sizeSqft: 240, sleeps: 3, additionalGuestPrice: 500 }).expect(201);
     rooms['701'] = res.body.data.id;
     expect(await getRoom('701')).toMatchObject({ beds: '1 King bed', blurb: 'Quiet corner room', size: '22 sq m', sizeSqft: 240, sleeps: 3, additionalGuestPrice: 500 });
-    await ctx.api().patch(`${V1}/rooms/${rooms['701']}`).set(mgr()).send({ blurb: 'Updated' }).expect(200);
+    await ctx.api().patch(`${V1}/rooms/${rooms['701']}`).set(bearer(ctx.token.ADMIN)).send({ blurb: 'Updated' }).expect(200);
     expect(await getRoom('701')).toMatchObject({ beds: '1 King bed', blurb: 'Updated', sleeps: 3, additionalGuestPrice: 500 });
-    await ctx.api().patch(`${V1}/rooms/${rooms['701']}`).set(mgr()).send({ beds: '', sizeSqft: null }).expect(200);
+    await ctx.api().patch(`${V1}/rooms/${rooms['701']}`).set(bearer(ctx.token.ADMIN)).send({ beds: '', sizeSqft: null }).expect(200);
     expect(await getRoom('701')).toMatchObject({ beds: '', sizeSqft: null, size: '22 sq m' });
     // The app's empty create body is fine and gives the old behaviour.
     rooms['702'] = (await create('702', {}).expect(201)).body.data.id;
@@ -37,12 +37,12 @@ describe('Room details', () => {
 
   it('validates the fields', async () => {
     for (const bad of [{ sizeSqft: 0 }, { sleeps: 11 }, { sleeps: 2.5 }, { additionalGuestPrice: -1 }, { blurb: 'x'.repeat(501) }, { beds: 'x'.repeat(81) }]) {
-      await ctx.api().patch(`${V1}/rooms/${rooms['702']}`).set(mgr()).send(bad).expect(400);
+      await ctx.api().patch(`${V1}/rooms/${rooms['702']}`).set(bearer(ctx.token.ADMIN)).send(bad).expect(400);
     }
-    await ctx.api().patch(`${V1}/rooms/${rooms['702']}`).set(mgr()).send({ additionalGuestPrice: 0 }).expect(200);
-    await ctx.api().patch(`${V1}/rooms/${rooms['702']}`).set(mgr()).send({ additionalGuestPrice: '250.50' }).expect(200);
+    await ctx.api().patch(`${V1}/rooms/${rooms['702']}`).set(bearer(ctx.token.ADMIN)).send({ additionalGuestPrice: 0 }).expect(200);
+    await ctx.api().patch(`${V1}/rooms/${rooms['702']}`).set(bearer(ctx.token.ADMIN)).send({ additionalGuestPrice: '250.50' }).expect(200);
     expect((await getRoom('702')).additionalGuestPrice).toBe(250.5);
-    await ctx.api().patch(`${V1}/rooms/${rooms['702']}`).set(mgr()).send({ additionalGuestPrice: null }).expect(200);
+    await ctx.api().patch(`${V1}/rooms/${rooms['702']}`).set(bearer(ctx.token.ADMIN)).send({ additionalGuestPrice: null }).expect(200);
     expect((await getRoom('702')).additionalGuestPrice).toBeNull();
   });
 });
@@ -56,7 +56,7 @@ describe('Per-room extra guest price and capacity', () => {
     expect(four).toMatchObject({ guests: 4, rate: 2100 }); // 1500 + 2 × 300
     await ctx.api().post(`${V1}/stays/${four.id}/checkout`).set(staff()).send({}).expect(200);
     await ctx.model('Room').updateOne({ _id: rooms['702'] }, { $set: { status: 'VACANT' } });
-    await ctx.api().patch(`${V1}/rooms/${rooms['702']}`).set(mgr()).send({ sleeps: 2 }).expect(200);
+    await ctx.api().patch(`${V1}/rooms/${rooms['702']}`).set(bearer(ctx.token.ADMIN)).send({ sleeps: 2 }).expect(200);
     const res = await checkIn('702', 3).expect(400);
     expect(res.body).toMatchObject({ code: 'TOO_MANY_GUESTS', message: 'Room 702 sleeps at most 2 guests' });
   });
@@ -65,7 +65,7 @@ describe('Per-room extra guest price and capacity', () => {
     rooms['703'] = (await create('703', { sleeps: 4, additionalGuestPrice: 100 }).expect(201)).body.data.id;
     const stay = (await checkIn('703', 3).expect(201)).body.data.stay;
     expect(stay.rate).toBe(1600);
-    await ctx.api().patch(`${V1}/rooms/${rooms['703']}`).set(mgr()).send({ additionalGuestPrice: 0 }).expect(200);
+    await ctx.api().patch(`${V1}/rooms/${rooms['703']}`).set(bearer(ctx.token.ADMIN)).send({ additionalGuestPrice: 0 }).expect(200);
     const row = (await ctx.api().get(`${V1}/rooms`).set(staff())).body.data.find((r: any) => r.number === '703');
     expect(row.currentStay).toMatchObject({ rate: 1600, guests: 3 });
     // A guest added now is priced with the new (free) extra charge.

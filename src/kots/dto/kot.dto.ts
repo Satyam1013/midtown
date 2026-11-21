@@ -74,6 +74,15 @@ export class KotQueryDto extends PageQueryDto {
   @IsOptional() @IsEnum(KotStatus)
   @ApiPropertyOptional({ enum: KotStatus })
   status?: KotStatus;
+
+  /** Business date; defaults to the open business day (else today). Not applied when only stayId is given (ADMIN). */
+  @IsOptional() @IsBusinessDate()
+  @ApiPropertyOptional({ type: String })
+  date?: string;
+
+  @IsOptional() @IsMongoId()
+  @ApiPropertyOptional({ type: String })
+  stayId?: string;
 }
 
 export class SettleBillDto {

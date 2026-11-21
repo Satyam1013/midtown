@@ -21,6 +21,8 @@ export enum BookingStatus {
   /** Every room of the booking has checked out. */
   CHECKED_OUT = 'CHECKED_OUT',
   CANCELLED = 'CANCELLED',
+  /** Didn't arrive by the end of the arrival day; set when that business day closes. */
+  NO_SHOW = 'NO_SHOW',
 }
 
 @Schema({ collection: 'bookings', timestamps: true })
@@ -40,6 +42,10 @@ export class Booking {
 
   @Prop(ref('RoomType'))
   roomTypeId: Types.ObjectId;
+
+  /** The room this booking holds for [arrivalDate, departureDate). Desk bookings always have one. */
+  @Prop(ref('Room', { required: false }))
+  roomId: Types.ObjectId | null;
 
   @Prop({ required: true, min: 1, default: 1 })
   rooms: number;
@@ -107,6 +113,7 @@ export const BookingSchema = buildSchema(Booking);
 BookingSchema.index({ arrivalDate: 1, status: 1 });
 BookingSchema.index({ status: 1, createdAt: -1 });
 BookingSchema.index({ phone: 1 });
+BookingSchema.index({ roomId: 1, status: 1, arrivalDate: 1 }, { partialFilterExpression: { roomId: { $type: 'objectId' } } });
 BookingSchema.index({ customerId: 1, createdAt: -1 });
 // The same OTA booking can't be imported twice.
 BookingSchema.index(

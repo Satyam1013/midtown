@@ -1,4 +1,5 @@
 import { Global, Module } from '@nestjs/common';
+import { LaundryOrder, LaundryOrderSchema, LaundryPriceList, LaundryPriceListSchema } from '../laundry/schemas/laundry-order.schema';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AuditLog, AuditLogSchema } from '../audit/schemas/audit-log.schema';
 import { Attendance, AttendanceSchema } from '../attendance/schemas/attendance.schema';
@@ -67,6 +68,8 @@ const models = MongooseModule.forFeature([
   { name: StockItem.name, schema: StockItemSchema },
   { name: StockMovement.name, schema: StockMovementSchema },
   { name: User.name, schema: UserSchema },
+  { name: LaundryOrder.name, schema: LaundryOrderSchema },
+  { name: LaundryPriceList.name, schema: LaundryPriceListSchema },
 ]);
 
 @Global()

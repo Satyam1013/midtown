@@ -1,7 +1,8 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Types } from 'mongoose';
-import { CurrentUser, Roles } from '../common/decorators';
+import { CurrentUser, OpenDayOnly, Roles } from '../common/decorators';
+import { noRows } from '../daybook/open-day.empty';
 import { DESK, MANAGEMENT } from '../common/enums';
 import { Principal } from '../common/interfaces/principal';
 import { ParseObjectIdPipe } from '../common/pipes/parse-object-id.pipe';
@@ -16,6 +17,7 @@ import { EntriesService } from './entries.service';
 export class EntriesController {
   constructor(private readonly entries: EntriesService) {}
 
+  @OpenDayOnly({ query: ['date'], empty: noRows })
   @Get()
   list(@Query() q: DateOnlyQueryDto) {
     return this.entries.list(q.date);

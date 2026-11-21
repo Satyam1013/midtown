@@ -9,6 +9,8 @@ export class Paged<T> {
   constructor(
     readonly items: T[],
     readonly meta: { page?: number; limit: number; total?: number; nextCursor?: string | null },
+    /** Extra top-level fields, next to `data` and `meta`, for contracts that read them there. */
+    readonly top: Record<string, unknown> = {},
   ) {}
 }
 
@@ -39,7 +41,7 @@ export class ResponseInterceptor implements NestInterceptor {
     return next.handle().pipe(
       map((result) => {
         if (result instanceof StreamableFile) return result;
-        if (result instanceof Paged) return { data: serialize(result.items), meta: result.meta };
+        if (result instanceof Paged) return { ...serialize(result.top), data: serialize(result.items), meta: result.meta };
         const data = serialize(result);
         return hoist ? { ...data, data, meta: {} } : { data, meta: {} };
       }),

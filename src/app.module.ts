@@ -11,7 +11,9 @@ import { ResponseInterceptor } from './common/interceptors/response.interceptor'
 import { RequestLoggerMiddleware } from './common/middleware/request-logger.middleware';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
+import { OpenDayInterceptor } from './daybook/open-day.interceptor';
 import { DOMAIN_MODULES } from './domain-modules';
+import { RoomHoldsModule } from './rooms/room-holds.service';
 import { HealthModule } from './health/health.module';
 import { NotificationsModule } from './notifications/notifications.module';
 
@@ -26,11 +28,14 @@ import { NotificationsModule } from './notifications/notifications.module';
     AuthModule,
     NotificationsModule,
     HealthModule,
+    RoomHoldsModule,
     ...DOMAIN_MODULES,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
     { provide: APP_INTERCEPTOR, useClass: ResponseInterceptor },
+    // After ResponseInterceptor, so its early `empty` answers are wrapped like any other.
+    { provide: APP_INTERCEPTOR, useClass: OpenDayInterceptor },
   ],
 })
 export class AppModule implements NestModule {

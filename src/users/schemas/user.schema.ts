@@ -1,9 +1,9 @@
 import { Prop, Schema } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
-import { Role } from '../../common/enums';
+import { LEGACY_OWNER, Role } from '../../common/enums';
 import { buildSchema, LIVE } from '../../database/build-schema';
 
-export const STAFF_ROLES = [Role.OWNER, Role.MANAGER, Role.STAFF, Role.KITCHEN] as const;
+export const STAFF_ROLES = [Role.ADMIN, Role.MANAGER, Role.STAFF, Role.KITCHEN] as const;
 
 @Schema({ collection: 'users', timestamps: true })
 export class User {
@@ -20,7 +20,8 @@ export class User {
   passwordHash: string;
 
   // GUEST is never a stored user; guests authenticate per stay via OTP.
-  @Prop({ type: String, required: true, enum: STAFF_ROLES })
+  // LEGACY_OWNER is read as ADMIN (staffRole) until migrate:roles rewrites it.
+  @Prop({ type: String, required: true, enum: [...STAFF_ROLES, LEGACY_OWNER], default: Role.MANAGER })
   role: Role;
 
   @Prop({ default: true })

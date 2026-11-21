@@ -18,6 +18,10 @@ export enum EntrySource {
   CUSTOMER_CREDIT = 'CUSTOMER_CREDIT',
   /** Paying a vendor for an expense bought on credit. */
   EXPENSE_PAYMENT = 'EXPENSE_PAYMENT',
+  /** Money taken out of the business (type "Withdraw"): a DEBIT, not an expense. Edited through /entries. */
+  WITHDRAW = 'WITHDRAW',
+  /** A laundry order paid at delivery (type "Laundry"). */
+  LAUNDRY = 'LAUNDRY',
   OTHER = 'OTHER',
 }
 
@@ -85,6 +89,10 @@ export class DayRegisterEntry {
   /** Checkout only: folio balance the guest left unpaid. Never written off silently. */
   @Prop(money({ required: false, default: null }))
   shortfall: Types.Decimal128 | null;
+
+  /** A reversal posted on the open day for an entry on a closed day (a voided stay's payment). */
+  @Prop(ref('DayRegisterEntry', { required: false }))
+  reversalOf: Types.ObjectId | null;
 }
 
 export type DayRegisterEntryDocument = HydratedDocument<DayRegisterEntry>;

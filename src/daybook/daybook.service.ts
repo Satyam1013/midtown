@@ -1,12 +1,14 @@
 import { Injectable } from '@nestjs/common';
+import { Booking, BookingStatus } from '../bookings/schemas/booking.schema';
+import { RoomHoldsService } from '../rooms/room-holds.service';
 import { InjectModel } from '@nestjs/mongoose';
 import Decimal from 'decimal.js';
 import { ClientSession, Model, Types } from 'mongoose';
 import { AuditService } from '../audit/audit.service';
 import { AuditAction } from '../audit/schemas/audit-log.schema';
 import { CashTxn } from '../cash-transactions/schemas/cash-txn.schema';
-import { DebitCredit, PaymentMode } from '../common/enums';
-import { badRequest, conflict, notFound } from '../common/errors';
+import { DebitCredit, PaymentMode, Role } from '../common/enums';
+import { badRequest, conflict, notFound, pastDateRestricted } from '../common/errors';
 import { Principal, userObjectId } from '../common/interfaces/principal';
 import { BusinessDateService } from '../common/services/business-date.service';
 import { dec, toD128 } from '../common/utils/money';
@@ -46,6 +48,8 @@ export class DaybookService {
     private readonly events: EventsService,
     private readonly audit: AuditService,
     @InjectModel(Settlement.name) private readonly settlements: Model<Settlement>,
+    @InjectModel(Booking.name) private readonly bookings: Model<Booking>,
+    private readonly holds: RoomHoldsService,
   ) {}
 
   /**
@@ -69,6 +73,40 @@ export class DaybookService {
     const status = statusOf(day);
     if (status === BusinessDayStatus.CLOSED) throw conflict('DAY_CLOSED', `${date} is closed and can't be changed`);
     if (status !== BusinessDayStatus.OPEN) throw conflict('DAY_NOT_OPEN', `${date} is not the open business day`);
+  }
+
+  /**
+   * Closing a day: every CONFIRMED or ARRIVING booking due on or before it, and not
+   * checked in, becomes NO_SHOW, each with an audit entry. Other statuses are left alone.
+   */
+  private async markNoShows(closedDate: string, user: Principal, session: ClientSession): Promise<string[]> {
+    const due = await this.bookings
+      .find({ arrivalDate: { $lte: closedDate }, status: { $in: [BookingStatus.CONFIRMED, BookingStatus.ARRIVING] }, 'roomLines.stayId': { $not: { $type: 'objectId' } } })
+      .select('_id status arrivalDate ref source guestName')
+      .session(session)
+      .lean();
+    const marked: string[] = [];
+    for (const b of due) {
+      // Conditional, so a check-in racing the close keeps its booking.
+      const res = await this.bookings.updateOne({ _id: b._id, status: b.status }, { $set: { status: BookingStatus.NO_SHOW } }, { session });
+      if (!res.modifiedCount) continue;
+      marked.push(String(b._id));
+      await this.audit.record(
+        AuditAction.BOOKING_NO_SHOW,
+        null,
+        userObjectId(user),
+        { bookingId: String(b._id), ref: b.ref, source: b.source, guestName: b.guestName, arrivalDate: b.arrivalDate, from: b.status, to: BookingStatus.NO_SHOW },
+        session,
+        closedDate,
+      );
+    }
+    return marked;
+  }
+
+  /** Non-admin staff may touch a record only if it belongs to the open day (403 otherwise). */
+  async assertOpenDayFor(user: Principal, date: string): Promise<void> {
+    if (user.role === Role.ADMIN) return;
+    if (date !== (await this.openDate())) throw pastDateRestricted();
   }
 
   /** The open day's date, or null; for defaults that aren't money postings. */
@@ -141,6 +179,8 @@ export class DaybookService {
           dto.businessDate,
         );
         afterCommit(() => this.events.toHotel('daybook.closed', { businessDate: dto.businessDate, status: 'OPEN' }));
+        // The new day's arrivals take their rooms.
+        await this.holds.syncAll(session, afterCommit);
         return day;
       });
     return this.withOneOpenGuard(work).then((day) => this.view(day));
@@ -204,13 +244,19 @@ export class DaybookService {
           session,
           day.businessDate,
         );
-        afterCommit(() => this.events.toHotel('daybook.closed', { businessDate: day.businessDate, status: 'CLOSED' }));
+        const noShows = await this.markNoShows(day.businessDate, user, session);
+        // No-shows give their rooms back.
+        await this.holds.syncAll(session, afterCommit);
+        afterCommit(() => {
+          this.events.toHotel('daybook.closed', { businessDate: day.businessDate, status: 'CLOSED' });
+          for (const id of noShows) this.events.toHotel('booking.updated', { id, status: BookingStatus.NO_SHOW });
+        });
         return day;
       })
       .then((day) => this.view(day));
   }
 
-  /** OWNER only: reopen a closed day, provided no other day is open. */
+  /** ADMIN only: reopen a closed day, provided no other day is open. */
   reopen(date: string, note: string, user: Principal) {
     const work = () =>
       this.tx.run(async ({ session }) => {
@@ -265,7 +311,13 @@ export class DaybookService {
   /** The legacy day book view for a date, plus the business-day fields. */
   async get(date: string) {
     const day = await this.books.findOne({ businessDate: date }).lean();
-    const { credits, debits } = await this.totals(date);
+    const [{ credits, debits }, withdrawn] = await Promise.all([
+      this.totals(date),
+      this.entries.aggregate<{ total: Types.Decimal128 }>([
+        { $match: { businessDate: date, source: EntrySource.WITHDRAW, dc: DebitCredit.DEBIT } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]),
+    ]);
     const short = await this.settlements.find({ businessDate: date, shortfall: { $gt: Types.Decimal128.fromString('0') } }).select('shortfall').lean();
     const opening = day ? dec(day.openingBalance) : dec(await this.carriedOpening(date));
     const status = statusOf(day);
@@ -277,6 +329,8 @@ export class DaybookService {
       openingBalance: toD128(opening),
       credits: toD128(credits),
       debits: toD128(debits),
+      /** Withdrawals of the day; already part of debits. */
+      totalWithdraw: toD128(dec(withdrawn[0]?.total ?? 0)),
       // Live figure until closed, then the recorded one.
       closingBalance: status === BusinessDayStatus.CLOSED && day?.closingBalance ? day.closingBalance : toD128(opening.plus(credits).minus(debits)),
       openedAt: day?.openedAt ?? null,
@@ -308,7 +362,7 @@ export class DaybookService {
     const rooms = await this.rooms
       .find({ _id: { $in: [...entries.map((e) => e.roomId), ...settlements.map((x) => x.roomId)].filter(Boolean) } })
       .select('number')
-      .lean();
+      .setOptions({ withDeleted: true }).lean();
     const numberOf = new Map(rooms.map((r) => [String(r._id), r.number]));
     const lines: any[] = [
       ...settlements.map((x) => ({ ...settlementRow(x, numberOf.get(String(x.roomId)) ?? null), createdAt: (x as any).createdAt })),
@@ -361,7 +415,7 @@ export class DaybookService {
   /** Check-outs of a day as single lines (for the entries list). */
   async settlementRows(date: string) {
     const settlements = await this.settlements.find({ businessDate: date }).lean();
-    const rooms = await this.rooms.find({ _id: { $in: settlements.map((x) => x.roomId) } }).select('number').lean();
+    const rooms = await this.rooms.find({ _id: { $in: settlements.map((x) => x.roomId) } }).select('number').setOptions({ withDeleted: true }).lean();
     return settlements.map((x) => settlementRow(x, rooms.find((r) => String(r._id) === String(x.roomId))?.number ?? null));
   }
 
@@ -386,7 +440,7 @@ export class DaybookService {
     entries.push(
       ...settled.map((x) => ({ _id: x._id, businessDate: x.businessDate, time: x.time, roomId: x.roomId, stayId: x.stayId, guestName: x.guestName, phone: x.phone, amount: x.amount, shortfall: x.shortfall, narration: x.narration }) as any),
     );
-    const rooms = await this.rooms.find({ _id: { $in: entries.map((e) => e.roomId).filter(Boolean) } }).select('number').lean();
+    const rooms = await this.rooms.find({ _id: { $in: entries.map((e) => e.roomId).filter(Boolean) } }).select('number').setOptions({ withDeleted: true }).lean();
     const numberOf = new Map(rooms.map((r) => [String(r._id), r.number]));
     return {
       days: days.map((d) => ({

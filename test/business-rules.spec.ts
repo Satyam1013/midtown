@@ -2,7 +2,7 @@ import { io, Socket } from 'socket.io-client';
 import { AddressInfo } from 'net';
 import { ConfigService } from '@nestjs/config';
 import { SmsService } from '../src/auth/sms.service';
-import { bearer, bootApp, checkIn, Ctx } from './helpers';
+import { bearer, bootApp, checkIn, Ctx, multiRoomBooking, roomOfType } from './helpers';
 
 const V1 = '/api/v1';
 let ctx: Ctx;
@@ -140,7 +140,7 @@ describe('Business day (shift)', () => {
   };
   const mgr = () => bearer(ctx.token.MANAGER);
   const current = async () => (await ctx.api().get(`${V1}/business-day/current`).set(staff()).expect(200)).body.data;
-  const daybook = async (date: string) => (await ctx.api().get(`${V1}/daybook`).query({ date }).set(staff()).expect(200)).body.data;
+  const daybook = async (date: string, as = staff()) => (await ctx.api().get(`${V1}/daybook`).query({ date }).set(as).expect(200)).body.data;
   const register = async (date: string) => (await ctx.api().get(`${V1}/daybook/register`).query({ date }).set(staff()).expect(200)).body.data;
   const close = (body: object) => ctx.api().post(`${V1}/business-day/close`).set(mgr()).send({ time: '23:30', ...body });
   const start = (body: object) => ctx.api().post(`${V1}/business-day/start`).set(staff()).send({ time: '08:00', ...body });
@@ -148,7 +148,7 @@ describe('Business day (shift)', () => {
   it('a second start while a day is open is 409; current shows the open day', async () => {
     const res = await start({ businessDate: day(5), openingBalance: '0' }).expect(409);
     expect(res.body.code).toBe('DAY_ALREADY_OPEN');
-    expect(await current()).toMatchObject({ status: 'OPEN', businessDate: ctx.today, openingBalance: 0, openedByName: 'OWNER' });
+    expect(await current()).toMatchObject({ status: 'OPEN', businessDate: ctx.today, openingBalance: 0, openedByName: 'ADMIN' });
   });
 
   it('postings ignore a client businessDate and land on the open day', async () => {
@@ -174,7 +174,7 @@ describe('Business day (shift)', () => {
     expect(of('CHECKOUT').filter((l: any) => l.guestName === 'Register Guest')).toHaveLength(1);
     expect(of('RESTAURANT').filter((l: any) => l.guestName === 'Table 9')).toEqual([expect.objectContaining({ amount: 315, dc: 'CREDIT', time: '13:00' })]);
     expect(of('EXPENSE').filter((l: any) => l.type === 'Vegetables')).toEqual([expect.objectContaining({ kind: 'expense', amount: 250, dc: 'DEBIT' })]);
-    expect(of('ONLINE')).toEqual([expect.objectContaining({ amount: 400, mode: 'BANK', dc: 'CREDIT' })]);
+    expect(of('ONLINE')).toEqual([expect.objectContaining({ amount: 500, mode: 'BANK', dc: 'CREDIT' })]); // the order value: no commission
     const times = lines.map((l: any) => l.time);
     expect(times).toEqual([...times].sort());
 
@@ -223,7 +223,9 @@ describe('Business day (shift)', () => {
   it('opening balance edits only while open, and are audited', async () => {
     await ctx.api().patch(`${V1}/daybook/opening`).set(mgr()).send({ businessDate: ctx.today, openingBalance: '1000.00', note: 'Float from safe' }).expect(200);
     expect(await ctx.model('AuditLog').countDocuments({ action: 'OPENING_BALANCE_CHANGE', businessDate: ctx.today })).toBe(1);
-    await ctx.api().patch(`${V1}/daybook/opening`).set(mgr()).send({ businessDate: day(9), openingBalance: '5.00' }).expect(409);
+    // A manager can't touch another day at all; an admin gets the closed-day rule.
+    expect((await ctx.api().patch(`${V1}/daybook/opening`).set(mgr()).send({ businessDate: day(9), openingBalance: '5.00' }).expect(403)).body.code).toBe('PAST_DATE_RESTRICTED');
+    await ctx.api().patch(`${V1}/daybook/opening`).set(bearer(ctx.token.ADMIN)).send({ businessDate: day(9), openingBalance: '5.00' }).expect(409);
   });
 
   it('5. close: closing = opening + credits − debits; shortage needs a note', async () => {
@@ -239,8 +241,10 @@ describe('Business day (shift)', () => {
     expect(closed).toMatchObject({ status: 'CLOSED', businessDate: ctx.today, shortage: 50, closeNote: 'Change given wrongly', closedByName: 'MANAGER' });
     expect(closed.expectedCash).toBeCloseTo(expected);
     expect(closed.closingBalance).toBeCloseTo(1000 + book.credits - book.debits);
-    expect(await daybook(ctx.today)).toMatchObject({ status: 'CLOSED', shortage: 50, countedCash: expected - 50, closeNote: 'Change given wrongly' });
-    const report = (await ctx.api().get(`${V1}/daybook/shortages`).query({ from: ctx.today, to: ctx.today }).set(mgr()).expect(200)).body.data;
+    // The day is closed now, so only an admin can still read it.
+    expect(await daybook(ctx.today, bearer(ctx.token.ADMIN))).toMatchObject({ status: 'CLOSED', shortage: 50, countedCash: expected - 50, closeNote: 'Change given wrongly' });
+    expect(await daybook(ctx.today, mgr())).toBeNull();
+    const report = (await ctx.api().get(`${V1}/daybook/shortages`).query({ from: ctx.today, to: ctx.today }).set(bearer(ctx.token.ADMIN)).expect(200)).body.data;
     expect(report.days).toEqual([expect.objectContaining({ businessDate: ctx.today, shortage: 50 })]);
   });
 
@@ -254,12 +258,15 @@ describe('Business day (shift)', () => {
     for (const res of await Promise.all(blocked)) expect([res.status, res.body.code]).toEqual([409, 'DAY_NOT_OPEN']);
   });
 
-  it('6 and 7. a closed day rejects edits from everyone, OWNER included', async () => {
+  it('6 and 7. a closed day rejects edits from everyone, ADMIN included', async () => {
     const manual = (await ctx.model('DayRegisterEntry').findOne({ businessDate: ctx.today, source: 'MANUAL' }).lean()) as any;
-    for (const t of [ctx.token.STAFF, ctx.token.OWNER]) {
-      const res = await ctx.api().patch(`${V1}/entries/${manual._id}`).set(bearer(t)).send({ narration: 'late fix' }).expect(409);
-      expect(res.body.code).toBe('DAY_CLOSED');
+    for (const t of [ctx.token.STAFF, ctx.token.MANAGER]) {
+      const res = await ctx.api().patch(`${V1}/entries/${manual._id}`).set(bearer(t)).send({ narration: 'late fix' }).expect(403);
+      expect(res.body.code).toBe('PAST_DATE_RESTRICTED');
     }
+    await ctx.api().delete(`${V1}/entries/${manual._id}`).set(bearer(ctx.token.MANAGER)).expect(403);
+    const res = await ctx.api().patch(`${V1}/entries/${manual._id}`).set(bearer(ctx.token.ADMIN)).send({ narration: 'late fix' }).expect(409);
+    expect(res.body.code).toBe('DAY_CLOSED');
   });
 
   it('starting with a different opening balance needs a note, and is audited', async () => {
@@ -284,9 +291,9 @@ describe('Business day (shift)', () => {
     expect(closed).toMatchObject({ businessDate: day(1), shortage: -20, closedTime: '00:30' });
   });
 
-  it('OWNER can reopen a closed day; the legacy close still works', async () => {
+  it('ADMIN can reopen a closed day; the legacy close still works', async () => {
     await ctx.api().post(`${V1}/business-day/reopen`).set(mgr()).send({ businessDate: day(1), note: 'fix' }).expect(403);
-    const reopened = (await ctx.api().post(`${V1}/business-day/reopen`).set(bearer(ctx.token.OWNER)).send({ businessDate: day(1), note: 'Missed an expense' }).expect(200)).body.data;
+    const reopened = (await ctx.api().post(`${V1}/business-day/reopen`).set(bearer(ctx.token.ADMIN)).send({ businessDate: day(1), note: 'Missed an expense' }).expect(200)).body.data;
     expect(reopened).toMatchObject({ status: 'OPEN', businessDate: day(1), shortage: null });
     await ctx.api().post(`${V1}/daybook/close`).set(mgr()).send({ businessDate: day(1) }).expect(200);
     // Leave a day open for the tests that follow.
@@ -452,7 +459,7 @@ describe('Guest security and orders', () => {
   it('a booking made at the desk or by a visitor shows up when that phone signs in', async () => {
     const types = (await ctx.api().get(`${V1}/guest/room-types`).set(bearer(guestA))).body.data;
     await ctx.api().post(`${V1}/bookings`).set(staff())
-      .send({ source: 'Walk-in', guestName: 'Desk Booked', phone: '+91 97000 00066', roomTypeId: types[0].id, rooms: 1, pax: 1, arrivalDate: '2027-01-10', departureDate: '2027-01-12', amount: '3600.00' })
+      .send({ source: 'Walk-in', guestName: 'Desk Booked', phone: '+91 97000 00066', roomId: await roomOfType(ctx, types[0].id), pax: 1, arrivalDate: '2027-01-10', departureDate: '2027-01-12', amount: '3600.00' })
       .expect(201);
     const token = await guestLogin('9700000066');
     expect(await bookingsOf(token)).toEqual([expect.objectContaining({ guestName: 'Desk Booked', phone: '9700000066', status: 'CONFIRMED' })]);
@@ -460,9 +467,7 @@ describe('Guest security and orders', () => {
 
   it('a booking with two rooms: per-room orders and requests; checked out when both rooms are', async () => {
     const types = (await ctx.api().get(`${V1}/guest/room-types`).set(bearer(guestA))).body.data;
-    const booking = (await ctx.api().post(`${V1}/bookings`).set(staff())
-      .send({ source: 'Walk-in', guestName: 'Family C', phone: '9700000003', roomTypeId: types[0].id, rooms: 2, pax: 4, arrivalDate: ctx.today, departureDate: '2027-12-31', amount: '1000.00' })
-      .expect(201)).body.data;
+    const booking = await multiRoomBooking(ctx, { source: 'Walk-in', guestName: 'Family C', phone: '9700000003', rooms: [{ roomTypeId: types[0].id, guests: 2 }, { roomTypeId: types[0].id, guests: 2 }], arrivalDate: ctx.today, departureDate: '2027-12-31', amount: '1000.00' });
     const guestC = await guestLogin('9700000003');
     const inRoom = async (number: string, name: string) =>
       (await ctx.api().post(`${V1}/stays`).set(staff()).send({ roomId: await ctx.roomId(number), guestName: name, phone: '9700000003', nights: 2, bookingId: booking.id }).expect(201)).body.data.stay;
@@ -741,14 +746,15 @@ describe('API contract with the front-ends', () => {
   });
 
   it('invoice numbers and GST come from the server', async () => {
+    const open = (await ctx.api().get(`${V1}/business-day/current`).set(staff()).expect(200)).body.data.businessDate;
     const res = await ctx.api().post(`${V1}/invoices`).set(staff())
-      .send({ businessDate: ctx.today, party: 'Acme', partyGstin: null, stayId: null, lines: [{ description: 'Room', kind: 'ROOM', qty: 2, rate: '1000.00' }, { description: 'Food', kind: 'FOOD', qty: 1, rate: '100.00' }] })
+      .send({ businessDate: open, party: 'Acme', partyGstin: null, stayId: null, lines: [{ description: 'Room', kind: 'ROOM', qty: 2, rate: '1000.00' }, { description: 'Food', kind: 'FOOD', qty: 1, rate: '100.00' }] })
       .expect(201);
     expect(res.body.data).toMatchObject({ number: 'MT-000001', taxable: 2100, cgst: 122.5, sgst: 122.5, total: 2345 });
   });
 
   it('all eight reports build as JSON and XLSX; restricted to management', async () => {
-    const owner = bearer(ctx.token.OWNER);
+    const owner = bearer(ctx.token.ADMIN);
     for (const key of ['daily', 'cash', 'rooms', 'bookings', 'expenses', 'stock', 'staff', 'online']) {
       const json = await ctx.api().get(`${V1}/reports/${key}`).query({ date: ctx.today }).set(owner).expect(200);
       expect(Array.isArray(json.body.data.rows)).toBe(true);
@@ -764,14 +770,14 @@ describe('API contract with the front-ends', () => {
     await ctx.api().get(`${V1}/reports/nope`).set(owner).expect(400);
   });
 
-  it('only OWNER manages users and tariffs', async () => {
+  it('only ADMIN manages users and tariffs', async () => {
     const types = await ctx.api().get(`${V1}/room-types`).set(staff()).expect(200);
     const suite = types.body.data.find((t: any) => t.name === 'Suite');
     await ctx.api().patch(`${V1}/room-types/${suite.id}`).set(bearer(ctx.token.MANAGER)).send({ tariff: '6000.00' }).expect(403);
-    await ctx.api().patch(`${V1}/room-types/${suite.id}`).set(bearer(ctx.token.OWNER)).send({ tariff: '6000.00' }).expect(200);
+    await ctx.api().patch(`${V1}/room-types/${suite.id}`).set(bearer(ctx.token.ADMIN)).send({ tariff: '6000.00' }).expect(200);
     expect(((await ctx.model('Room').findOne({ number: '302' }).lean()) as any).rate.toString()).toBe('6000.00');
     await ctx.api().get(`${V1}/users`).set(bearer(ctx.token.MANAGER)).expect(403);
-    const users = await ctx.api().get(`${V1}/users`).set(bearer(ctx.token.OWNER)).expect(200);
+    const users = await ctx.api().get(`${V1}/users`).set(bearer(ctx.token.ADMIN)).expect(200);
     expect(JSON.stringify(users.body)).not.toContain('passwordHash');
   });
 });

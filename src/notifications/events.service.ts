@@ -11,12 +11,19 @@ export type HotelEvent =
   | 'stay.updated'
   | 'folio.updated'
   | 'room.status.changed'
+  | 'room.deleted'
   | 'entry.created'
   | 'entry.updated'
   | 'daybook.closed'
   | 'service-request.created'
   | 'service-request.updated'
-  | 'booking.created';
+  | 'booking.created'
+  | 'booking.updated'
+  | 'booking.deleted'
+  | 'stay.voided'
+  | 'expense.updated'
+  | 'online-order.updated'
+  | 'laundry.updated';
 
 // Call only from TxContext.afterCommit (or after a completed write), so
 // nothing is broadcast for work that rolled back.

@@ -15,6 +15,13 @@ export class OnlineOrderItem {
 }
 export const OnlineOrderItemSchema = SchemaFactory.createForClass(OnlineOrderItem);
 
+export enum OnlineOrderStatus {
+  PREPARING = 'PREPARING',
+  PICKED_UP = 'PICKED_UP',
+  DELIVERED = 'DELIVERED',
+  CANCELLED = 'CANCELLED',
+}
+
 @Schema({ collection: 'online_orders', timestamps: true })
 export class OnlineOrder {
   @Prop(businessDate())
@@ -31,19 +38,24 @@ export class OnlineOrder {
   @Prop({ type: [OnlineOrderItemSchema], default: [] })
   items: OnlineOrderItem[];
 
+  /** The order value: the only money field, posted to the day book as a BANK receipt. */
   @Prop(money())
   amount: Types.Decimal128;
 
-  @Prop({ type: MongooseSchema.Types.Decimal128, required: true })
-  commissionPct: Types.Decimal128;
+  /** Orders from before commission was dropped; null on new ones. */
+  @Prop({ type: MongooseSchema.Types.Decimal128, default: null })
+  commissionPct: Types.Decimal128 | null;
 
-  /** amount − commission, computed server-side. */
-  @Prop(money())
-  payout: Types.Decimal128;
+  @Prop(money({ required: false, default: null }))
+  payout: Types.Decimal128 | null;
 
-  // The manager app sends no status on create and shows this title-cased.
-  @Prop({ type: String, trim: true, default: 'PREPARING' })
+  // Older orders may hold other strings; new ones and every change use OnlineOrderStatus.
+  @Prop({ type: String, trim: true, default: OnlineOrderStatus.PREPARING })
   status: string;
+
+  /** Front-desk clock time the order was added, 'HH:mm'. */
+  @Prop({ type: String, default: null })
+  time: string | null;
 
   /** The register line posting the payout. */
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'DayRegisterEntry', default: null })

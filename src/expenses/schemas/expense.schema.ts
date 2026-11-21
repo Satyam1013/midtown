@@ -66,6 +66,14 @@ export class Expense {
 
   @Prop(ref('User'))
   createdByUserId: Types.ObjectId;
+
+  /** Salary advances: the staff member paid, so payroll can deduct it. */
+  @Prop(ref('Staff', { required: false }))
+  staffId: Types.ObjectId | null;
+
+  /** Deleted expenses only: who deleted it. */
+  @Prop(ref('User', { required: false }))
+  deletedByUserId: Types.ObjectId | null;
 }
 
 export type ExpenseDocument = HydratedDocument<Expense>;
@@ -74,3 +82,4 @@ export const ExpenseSchema = buildSchema(Expense);
 ExpenseSchema.index({ businessDate: 1, head: 1 });
 ExpenseSchema.index({ onCredit: 1, dueAmount: 1, dueDate: 1 });
 ExpenseSchema.index({ vendor: 1, onCredit: 1 });
+ExpenseSchema.index({ staffId: 1, businessDate: -1 }, { partialFilterExpression: { staffId: { $type: 'objectId' } } });

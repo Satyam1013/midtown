@@ -25,7 +25,7 @@ beforeAll(async () => {
     ['410', 'AC Standard', 'AC', '1000.00', '1500.00'],
   ];
   for (const [number, roomType, category, singleRate, doubleRate] of plan) {
-    const res = await ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.MANAGER))
+    const res = await ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.ADMIN))
       .send({ number, floor: 4, category, roomType, singleRate, doubleRate, rate: singleRate })
       .expect(201);
     rooms[number] = res.body.data.id;
@@ -75,15 +75,15 @@ describe('Rooms', () => {
   it('validates the type against the category and requires both rates', async () => {
     const mgr = bearer(ctx.token.MANAGER);
     const base = { number: '499', floor: 4, category: 'NON_AC', roomType: 'AC Deluxe', singleRate: '900', doubleRate: '1100' };
-    expect((await ctx.api().post(`${V1}/rooms`).set(mgr).send(base).expect(400)).body.code).toBe('TYPE_CATEGORY_MISMATCH');
-    expect((await ctx.api().post(`${V1}/rooms`).set(mgr).send({ ...base, roomType: 'Non AC Standard', doubleRate: undefined }).expect(400)).body.code).toBe('RATES_REQUIRED');
-    await ctx.api().post(`${V1}/rooms`).set(mgr).send({ ...base, roomType: 'Non AC Standard', singleRate: '0' }).expect(400);
+    expect((await ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.ADMIN)).send(base).expect(400)).body.code).toBe('TYPE_CATEGORY_MISMATCH');
+    expect((await ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.ADMIN)).send({ ...base, roomType: 'Non AC Standard', doubleRate: undefined }).expect(400)).body.code).toBe('RATES_REQUIRED');
+    await ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.ADMIN)).send({ ...base, roomType: 'Non AC Standard', singleRate: '0' }).expect(400);
   });
 
   it('the old POST /rooms body still works', async () => {
     const types = (await ctx.api().get(`${V1}/room-types`).set(staff()).expect(200)).body.data;
     const standard = types.find((t: any) => t.name === 'Standard');
-    const res = await ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.MANAGER)).send({ number: '498', floor: 4, roomTypeId: standard.id, rate: '1900.00' }).expect(201);
+    const res = await ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.ADMIN)).send({ number: '498', floor: 4, roomTypeId: standard.id, rate: '1900.00' }).expect(201);
     expect(res.body.data).toMatchObject({ singleRate: 1900, doubleRate: 1900, rate: 1900 });
   });
 
@@ -126,7 +126,7 @@ describe('Pricing by guest count', () => {
 
   it('a room price edit does not touch a stay in progress', async () => {
     const stay = await checkIn('404', '9500000012', 2, 0, 2);
-    await ctx.api().patch(`${V1}/rooms/${rooms['404']}`).set(bearer(ctx.token.MANAGER)).send({ singleRate: '750.00', doubleRate: '950.00' }).expect(200);
+    await ctx.api().patch(`${V1}/rooms/${rooms['404']}`).set(bearer(ctx.token.ADMIN)).send({ singleRate: '750.00', doubleRate: '950.00' }).expect(200);
     const list = (await ctx.api().get(`${V1}/rooms`).set(staff()).expect(200)).body.data;
     const room = list.find((r: any) => r.number === '404');
     expect(room).toMatchObject({ singleRate: 750, doubleRate: 950, rate: 750 });

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import Decimal from 'decimal.js';
 import { InjectModel } from '@nestjs/mongoose';
 import { ClientSession, Model, Types } from 'mongoose';
 import { AuditService } from '../audit/audit.service';
@@ -24,6 +25,7 @@ import { settlementRow } from '../stays/settlement-row';
 import { CustomerListQueryDto, UpdateCustomerDto } from './dto/customer.dto';
 import { CustomerDocument } from './schemas/customer-document.schema';
 import { Customer } from './schemas/customer.schema';
+import { CustomerCreditEntry } from './schemas/customer-credit-entry.schema';
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -32,6 +34,9 @@ export const customerPhone = (raw?: string | null) => {
   const p = normalizePhone(raw);
   return p.length === 10 ? p : null;
 };
+
+/** What the customer owes, as a 2-decimal string; never negative. */
+const dueOf = (balance: Types.Decimal128 | null | undefined) => Decimal.max(dec(balance ?? 0), 0).toFixed(2);
 
 @Injectable()
 export class CustomersService {
@@ -49,6 +54,7 @@ export class CustomersService {
     private readonly counters: CounterService,
     private readonly credit: CustomerCreditService,
     @InjectModel(Settlement.name) private readonly settlementModel: Model<Settlement>,
+    @InjectModel(CustomerCreditEntry.name) private readonly creditEntries: Model<CustomerCreditEntry>,
     private readonly tx: TransactionService,
     private readonly audit: AuditService,
   ) {}
@@ -126,7 +132,7 @@ export class CustomersService {
     const loose = await this.stays.find({ customerId, $or: [{ bookingId: null }, { bookingId: { $exists: false } }] }).lean();
     for (const stay of loose) {
       await this.tx.run(async ({ session }) => {
-        const room = await this.rooms.findById(stay.roomId).select('roomTypeId').session(session).lean();
+        const room = await this.rooms.findById(stay.roomId).select('roomTypeId').setOptions({ withDeleted: true }).session(session).lean();
         // Re-checked inside the transaction so a concurrent sign-in can't make two.
         const fresh = await this.stays.findOne({ _id: stay._id, bookingId: null }).session(session).lean();
         if (fresh && room) await this.bookingForStay(fresh, room.roomTypeId, session);
@@ -185,8 +191,9 @@ export class CustomersService {
     const limit = q.limit ?? 50;
     // Customers who only signed in to the guest app (no stay yet) are left out,
     // unless the list is of customers who owe money.
-    const filter: Record<string, unknown> =
-      q.hasCredit === 'true' ? { creditBalance: { $gt: Types.Decimal128.fromString('0') } } : { lastVisitAt: { $ne: null } };
+    const owing = q.hasCredit === 'true' || q.hasDue === 'true';
+    const byDue = q.sort === 'due_desc';
+    const filter: Record<string, unknown> = owing ? { creditBalance: { $gt: Types.Decimal128.fromString('0') } } : { lastVisitAt: { $ne: null } };
     const and: Record<string, unknown>[] = [];
     if (q.filter === 'repeat') filter.visits = { $gt: 1 };
     if (q.filter === 'nodoc') filter.documentCount = 0;
@@ -200,7 +207,10 @@ export class CustomersService {
         ],
       });
     }
-    if (q.cursor) {
+    if (q.cursor && byDue) {
+      const { d, id } = this.decodeDueCursor(q.cursor);
+      and.push({ $or: [{ creditBalance: { $lt: d } }, { creditBalance: d, _id: { $lt: id } }] });
+    } else if (q.cursor) {
       const { t, id } = this.decodeCursor(q.cursor);
       // Customers with no visit sort last.
       and.push(
@@ -210,10 +220,18 @@ export class CustomersService {
       );
     }
     if (and.length) filter.$and = and;
-    const rows = await this.customers.find(filter).sort({ lastVisitAt: -1, _id: -1 }).limit(limit + 1).lean();
+    // dueAmount is the customer's creditBalance, kept in step with the credit ledger in the
+    // same transaction as every ledger write, so the list needs no per-customer lookups.
+    const sort: Record<string, 1 | -1> = byDue ? { creditBalance: -1, _id: -1 } : { lastVisitAt: -1, _id: -1 };
+    const rows = await this.customers.find(filter).sort(sort).limit(limit + 1).lean();
     const page = rows.slice(0, limit);
     const last = page[page.length - 1];
-    const nextCursor = rows.length > limit && last ? this.encodeCursor(last.lastVisitAt ?? null, last._id) : null;
+    const nextCursor =
+      rows.length > limit && last
+        ? byDue
+          ? this.encodeDueCursor(last.creditBalance, last._id)
+          : this.encodeCursor(last.lastVisitAt ?? null, last._id)
+        : null;
     return new Paged(
       page.map((c) => ({
         id: c._id,
@@ -223,6 +241,7 @@ export class CustomersService {
         visits: c.visits,
         totalSpent: c.totalSpent,
         creditBalance: c.creditBalance ?? Types.Decimal128.fromString('0'),
+        dueAmount: dueOf(c.creditBalance),
         lastVisitAt: c.lastVisitAt,
         hasDocument: c.documentCount > 0,
         documentType: c.documentType,
@@ -245,7 +264,7 @@ export class CustomersService {
 
     const settlements = await this.settlementModel.find({ stayId: { $in: stayIds } }).lean();
     const [rooms, money, payments, documents, creditEntries] = await Promise.all([
-      this.rooms.find({ _id: { $in: stays.map((s) => s.roomId) } }).select('number roomTypeId').lean(),
+      this.rooms.find({ _id: { $in: stays.map((s) => s.roomId) } }).select('number roomTypeId').setOptions({ withDeleted: true }).lean(),
       this.folio.aggregate<{ _id: { stayId: Types.ObjectId; paid: boolean }; total: Types.Decimal128 }>([
         { $match: { stayId: { $in: stayIds }, deletedAt: null } },
         { $group: { _id: { stayId: '$stayId', paid: { $in: ['$source', ['PAYMENT', 'REFUND']] } }, total: { $sum: '$amount' } } },
@@ -274,6 +293,7 @@ export class CustomersService {
       hasDocument: c.documentCount > 0,
       documentType: c.documentType,
       creditBalance: c.creditBalance ?? Types.Decimal128.fromString('0'),
+      dueAmount: dueOf(c.creditBalance),
       creditEntries: creditEntries.map((e) => ({
         id: e._id,
         kind: e.kind,
@@ -373,6 +393,7 @@ export class CustomersService {
         this.stays.updateMany({ customerId: from._id }, { $set: { customerId: into._id } }, { session }),
         this.stayGuests.updateMany({ customerId: from._id }, { $set: { customerId: into._id } }, { session }),
         this.documents.updateMany({ customerId: from._id }, { $set: { customerId: into._id } }, { session }),
+        this.creditEntries.updateMany({ customerId: from._id }, { $set: { customerId: into._id } }, { session }),
       ]);
       const earliest = [from.firstVisitAt, into.firstVisitAt].filter(Boolean).sort((a, b) => +a! - +b!)[0] ?? null;
       const latest = [from.lastVisitAt, into.lastVisitAt].filter(Boolean).sort((a, b) => +b! - +a!)[0] ?? null;
@@ -390,6 +411,8 @@ export class CustomersService {
         lastVisitAt: latest,
         documentCount: into.documentCount + from.documentCount,
         documentType: into.documentType ?? from.documentType,
+        // The credit ledger moved with the customer, so the balance follows it.
+        creditBalance: toD128(dec(into.creditBalance ?? 0).plus(dec(from.creditBalance ?? 0))),
       });
       await into.save({ session });
       await this.audit.record(AuditAction.CUSTOMER_MERGE, null, userObjectId(user), { from: snapshot, into: into._id }, session);
@@ -405,6 +428,20 @@ export class CustomersService {
 
   private encodeCursor(t: Date | null, id: Types.ObjectId) {
     return Buffer.from(JSON.stringify({ t: t ? t.toISOString() : null, id: String(id) })).toString('base64url');
+  }
+
+  private encodeDueCursor(balance: Types.Decimal128 | null | undefined, id: Types.ObjectId) {
+    return Buffer.from(JSON.stringify({ d: dec(balance ?? 0).toFixed(2), id: String(id) })).toString('base64url');
+  }
+
+  private decodeDueCursor(cursor: string) {
+    try {
+      const { d, id } = JSON.parse(Buffer.from(cursor, 'base64url').toString());
+      if (typeof d !== 'string' || !/^-?\d+(\.\d+)?$/.test(d) || !Types.ObjectId.isValid(id)) throw new Error();
+      return { d: Types.Decimal128.fromString(d), id: new Types.ObjectId(id) };
+    } catch {
+      throw badRequest('INVALID_CURSOR', 'The cursor is not valid');
+    }
   }
 
   private decodeCursor(cursor: string) {

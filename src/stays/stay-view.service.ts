@@ -32,7 +32,7 @@ export class StayViewService {
     const roomIds = new Set<string>();
     stays.forEach((s) => roomIds.add(String(s.roomId)));
     shifts.forEach((s) => [s.fromRoomId, s.toRoomId].forEach((r) => roomIds.add(String(r))));
-    const rooms = await this.rooms.find({ _id: { $in: [...roomIds] } }).select('number').lean();
+    const rooms = await this.rooms.find({ _id: { $in: [...roomIds] } }).select('number').setOptions({ withDeleted: true }).lean();
     const numberOf = new Map(rooms.map((r) => [String(r._id), r.number]));
     const lineOf = new Map(tariffLines.map((l) => [String(l._id), l]));
 

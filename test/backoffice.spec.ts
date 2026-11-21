@@ -22,7 +22,7 @@ const setDay = (status: 'OPEN' | 'CLOSED') => ctx.model('DayBook').updateOne({ b
 describe('Room images', () => {
   it('upload, list in order, serve publicly, delete', async () => {
     const roomId = await ctx.roomId('101');
-    const up = (name: string, buf = PNG) => ctx.api().post(`${V1}/rooms/${roomId}/images`).set(mgr()).attach('file', buf, name);
+    const up = (name: string, buf = PNG) => ctx.api().post(`${V1}/rooms/${roomId}/images`).set(bearer(ctx.token.ADMIN)).attach('file', buf, name);
     await ctx.api().post(`${V1}/rooms/${roomId}/images`).set(staff()).attach('file', PNG, 'a.png').expect(403);
     expect((await up('fake.jpg', Buffer.from('definitely not an image at all')).expect(400)).body.code).toBe('UNSUPPORTED_FILE');
     const a = (await up('a.png').expect(201)).body.data;
@@ -37,7 +37,7 @@ describe('Room images', () => {
 
     const img = await ctx.api().get(a.url).expect(200);
     expect(img.headers['content-type']).toBe('image/png');
-    await ctx.api().delete(`${V1}/rooms/${roomId}/images/${a.id}`).set(mgr()).expect(200);
+    await ctx.api().delete(`${V1}/rooms/${roomId}/images/${a.id}`).set(bearer(ctx.token.ADMIN)).expect(200);
     expect((await ctx.api().get(`${V1}/rooms/${roomId}`).set(staff())).body.data.images).toEqual([{ id: b.id, url: b.url }]);
     await ctx.api().get(a.url).expect(404);
     // Maintenance history stays manager-only.

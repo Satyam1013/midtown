@@ -33,11 +33,13 @@ export class CreateEntryDto {
   @ApiProperty({ type: String })
   type: string;
 
-  @IsEnum(PaymentMode)
+  /** Required, except for a Withdraw (BANK by default). */
+  @IsOptional() @IsEnum(PaymentMode)
   @ApiProperty({ enum: PaymentMode })
   mode: PaymentMode;
 
-  @IsEnum(DebitCredit)
+  /** Required, except for a Withdraw (always DEBIT). */
+  @IsOptional() @IsEnum(DebitCredit)
   @ApiProperty({ enum: DebitCredit })
   dc: DebitCredit;
 
@@ -91,3 +93,7 @@ export class UpdateEntryDto {
   @ApiPropertyOptional({ type: String })
   narration?: string;
 }
+
+/** The entry type for money withdrawn from the business. Compared without case. */
+export const WITHDRAW_TYPE = 'Withdraw';
+export const isWithdraw = (type: string | null | undefined) => (type ?? '').trim().toLowerCase() === 'withdraw';

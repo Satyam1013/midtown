@@ -6,7 +6,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import * as bcrypt from 'bcryptjs';
 import { randomInt, timingSafeEqual } from 'crypto';
 import { Model } from 'mongoose';
-import { Role } from '../common/enums';
+import { Role, staffRole } from '../common/enums';
 import { ApiError, badRequest, notFound, unauthorized } from '../common/errors';
 import { Principal } from '../common/interfaces/principal';
 import { normalizePhone } from '../common/utils/phone';
@@ -153,7 +153,7 @@ export class AuthService {
   }
 
   private publicUser(user: any) {
-    return { id: String(user._id), name: user.name, phone: user.phone, email: user.email, role: user.role };
+    return { id: String(user._id), name: user.name, phone: user.phone, email: user.email, role: staffRole(user.role) };
   }
 
   private hash(otp: string) {

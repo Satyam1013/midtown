@@ -1,4 +1,4 @@
-import { bearer, bootApp, checkIn, Ctx } from './helpers';
+import { bearer, bootApp, checkIn, Ctx, multiRoomBooking } from './helpers';
 
 const V1 = '/api/v1';
 let ctx: Ctx;
@@ -122,8 +122,7 @@ describe('One register row per check-out', () => {
 
   it('each room of a multi-room booking gets its own row', async () => {
     const types = (await ctx.api().get(`${V1}/guest/room-types`).set(staff())).body.data;
-    const booking = (await ctx.api().post(`${V1}/bookings`).set(staff())
-      .send({ source: 'Walk-in', guestName: 'Group', phone: '9822200200', roomTypeId: types[0].id, rooms: 2, pax: 2, arrivalDate: ctx.today, departureDate: '2027-12-31', amount: '100' }).expect(201)).body.data;
+    const booking = await multiRoomBooking(ctx, { source: 'Walk-in', guestName: 'Group', phone: '9822200200', rooms: [{ roomTypeId: types[0].id, guests: 1 }, { roomTypeId: types[0].id, guests: 1 }], arrivalDate: ctx.today, departureDate: '2027-12-31', amount: '100' });
     const ids: string[] = [];
     for (const n of ['202', '203']) {
       ids.push((await ctx.api().post(`${V1}/stays`).set(staff()).send({ roomId: await ctx.roomId(n), guestName: `Group ${n}`, phone: '9822200200', nights: 1, bookingId: booking.id }).expect(201)).body.data.stay.id);

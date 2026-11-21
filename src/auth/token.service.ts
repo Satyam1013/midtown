@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { Role } from '../common/enums';
+import { Role, staffRole } from '../common/enums';
 import { unauthorized } from '../common/errors';
 import { AccessTokenClaims, Principal } from '../common/interfaces/principal';
 import { Stay } from '../stays/schemas/stay.schema';
@@ -26,7 +26,7 @@ export class TokenService {
 
   signAccess(user: { _id: unknown; role: Role; tokenVersion?: number }) {
     return this.jwt.signAsync(
-      { typ: 'staff', sub: String(user._id), role: user.role, ver: user.tokenVersion ?? 0 } satisfies AccessTokenClaims,
+      { typ: 'staff', sub: String(user._id), role: staffRole(user.role), ver: user.tokenVersion ?? 0 } satisfies AccessTokenClaims,
       { secret: this.accessSecret, expiresIn: this.config.get<string>('JWT_ACCESS_EXPIRES_IN', '12h') as any },
     );
   }
@@ -80,7 +80,13 @@ export class TokenService {
       if (!user || !user.active || (user.tokenVersion ?? 0) !== claims.ver) {
         throw unauthorized('INVALID_TOKEN', 'Session is no longer valid');
       }
-      return { role: user.role, userId: String(user._id) };
+      // The role is always the stored one. A token without a role claim, or one
+      // issued before the role changed, is refused so the app signs in again.
+      const role = staffRole(user.role);
+      if (!claims.role || staffRole(claims.role) !== role) {
+        throw unauthorized('INVALID_TOKEN', 'Session is no longer valid');
+      }
+      return { role, userId: String(user._id) };
     }
     if (claims.typ === 'customer' && claims.sub) {
       // A merged or removed customer is signed out at once.

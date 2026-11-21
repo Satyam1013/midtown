@@ -9,6 +9,8 @@ export enum RoomStatus {
   OOO = 'OOO',
   /** Under repair: not sold, checked into, shifted to or booked. Set by a manager. */
   MAINTENANCE = 'MAINTENANCE',
+  /** Held today by a booking: only that booking's guest can be checked in. Set by the server. */
+  PREBOOKED = 'PREBOOKED',
 }
 
 /** The fixed list of features a room can have. */
@@ -31,7 +33,7 @@ export const ROOM_FEATURES = [
 export type RoomFeature = (typeof ROOM_FEATURES)[number];
 
 /** Statuses in which a room can still be sold (DIRTY is cleaned before arrival). */
-export const SELLABLE_STATUSES = ['VACANT', 'DIRTY', 'OCCUPIED'];
+export const SELLABLE_STATUSES = ['VACANT', 'DIRTY', 'OCCUPIED', 'PREBOOKED'];
 
 export enum RoomCategory {
   AC = 'AC',
@@ -110,6 +112,10 @@ export class Room {
 
   @Prop(ref('User', { required: false }))
   maintenanceByUserId: Types.ObjectId | null;
+
+  /** Bumped whenever a booking takes or checks this room, so concurrent holds conflict. */
+  @Prop({ type: Number, default: 0, select: false })
+  holdRev: number;
 }
 
 export type RoomDocument = HydratedDocument<Room>;

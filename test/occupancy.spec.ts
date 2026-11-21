@@ -1,4 +1,4 @@
-import { bearer, bootApp, Ctx } from './helpers';
+import { bearer, bootApp, Ctx, multiRoomBooking, roomOfType } from './helpers';
 
 const V1 = '/api/v1';
 let ctx: Ctx;
@@ -17,7 +17,7 @@ afterAll(async () => {
   await ctx.app.close();
 });
 
-const owner = () => bearer(ctx.token.OWNER);
+const owner = () => bearer(ctx.token.ADMIN);
 const day = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
 const quoteBody = (rooms: number, pax: number) => ({ roomTypeId: typeId, rooms, pax, arrivalDate: day(10), departureDate: day(13) });
 
@@ -30,7 +30,7 @@ describe('Occupancy-based room-type pricing', () => {
     await ctx.api().post(`${V1}/room-types`).set(owner()).send({ ...body, additionalGuestRate: '-1' }).expect(400);
     typeId = (await ctx.api().post(`${V1}/room-types`).set(owner()).send(body).expect(201)).body.data.id;
     for (const n of ['601', '602', '603']) {
-      await ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.MANAGER)).send({ number: n, floor: 6, roomTypeId: typeId, rate: '1500' }).expect(201);
+      await ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.ADMIN)).send({ number: n, floor: 6, roomTypeId: typeId, rate: '1500' }).expect(201);
     }
     const pub = (await ctx.api().get(`${V1}/public/room-types`).expect(200)).body.data.find((t: any) => t.id === typeId);
     expect(pub).toMatchObject({ name: 'AC Family', sleeps: 4, singleRate: 1500, doubleRate: 1800, additionalGuestRate: 400, tariff: 1500 });
@@ -69,10 +69,10 @@ describe('Occupancy-based room-type pricing', () => {
 
     // Front desk: priced on the server whatever amount is sent; an OTA keeps its own amount.
     const desk = (await ctx.api().post(`${V1}/bookings`).set(bearer(ctx.token.STAFF))
-      .send({ source: 'Walk-in', guestName: 'Desk', phone: '9844400002', ...quoteBody(1, 3), amount: '1.00' }).expect(201)).body.data;
+      .send({ source: 'Walk-in', guestName: 'Desk', phone: '9844400002', ...quoteBody(1, 3), roomId: await roomOfType(ctx, typeId, 0), amount: '1.00' }).expect(201)).body.data;
     expect(desk).toMatchObject({ amount: 6600, roomLines: [{ guests: 3, rate: 2200 }] });
     const ota = (await ctx.api().post(`${V1}/bookings`).set(bearer(ctx.token.STAFF))
-      .send({ source: 'MakeMyTrip', ref: 'MMT-77', guestName: 'OTA', phone: '9844400003', ...quoteBody(1, 1), amount: '4000.00' }).expect(201)).body.data;
+      .send({ source: 'MakeMyTrip', ref: 'MMT-77', guestName: 'OTA', phone: '9844400003', ...quoteBody(1, 1), roomId: await roomOfType(ctx, typeId, 1), amount: '4000.00' }).expect(201)).body.data;
     expect(ota).toMatchObject({ amount: 4000, roomLines: [{ guests: 1, rate: 1500 }] });
 
     // A later price rise doesn't touch the booking: check-in charges the booked rate.
@@ -113,8 +113,7 @@ describe('Occupancy-based room-type pricing', () => {
     await bad({ rooms: [] });
 
     // Front desk books it; checking in a Standard room takes the Standard line, wherever it sits.
-    const booking = (await ctx.api().post(`${V1}/bookings`).set(bearer(ctx.token.STAFF))
-      .send({ source: 'Walk-in', guestName: 'Mixed', phone: '9844400010', pax: 6, ...body }).expect(201)).body.data;
+    const booking = await multiRoomBooking(ctx, { source: 'Walk-in', guestName: 'Mixed', phone: '9844400010', pax: 6, ...body });
     expect(booking).toMatchObject({ rooms: 3, pax: 6, amount: (2500 + 3400 + 1900) * 2 });
     const std = String(((await ctx.model('Room').findOne({ roomTypeId: standard.id, status: 'VACANT' }).lean()) as any)._id);
     const stay = (await ctx.api().post(`${V1}/stays`).set(bearer(ctx.token.STAFF)).send({ roomId: std, guestName: 'Mixed C', phone: '9844400010', nights: 2, bookingId: booking.id }).expect(201)).body.data.stay;

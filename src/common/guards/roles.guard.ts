@@ -15,7 +15,8 @@ export class RolesGuard implements CanActivate {
     if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, targets)) return true;
     const allowed = this.reflector.getAllAndOverride<Role[]>(ROLES, targets) ?? ALL_STAFF;
     if (!allowed.includes(ctx.switchToHttp().getRequest().user?.role)) {
-      throw forbidden('FORBIDDEN', 'You do not have permission to do this');
+      const adminOnly = allowed.length === 1 && allowed[0] === Role.ADMIN;
+      throw forbidden('FORBIDDEN', adminOnly ? 'Admin access required' : 'You do not have permission to do this');
     }
     return true;
   }

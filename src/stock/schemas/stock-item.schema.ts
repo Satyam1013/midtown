@@ -1,6 +1,6 @@
 import { Prop, Schema } from '@nestjs/mongoose';
 import { HydratedDocument, Types, Schema as MongooseSchema } from 'mongoose';
-import { buildSchema, LIVE, money } from '../../database/build-schema';
+import { buildSchema, LIVE, money, ref } from '../../database/build-schema';
 
 @Schema({ collection: 'stock_items', timestamps: true })
 export class StockItem {
@@ -25,6 +25,10 @@ export class StockItem {
   /** Purchase rate per unit. */
   @Prop(money())
   rate: Types.Decimal128;
+
+  /** Deleted items only: who deleted it. */
+  @Prop(ref('User', { required: false }))
+  deletedByUserId: Types.ObjectId | null;
 }
 
 export type StockItemDocument = HydratedDocument<StockItem>;

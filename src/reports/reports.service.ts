@@ -156,10 +156,10 @@ export class ReportsService {
           },
         ]));
       case 'online':
-        return this.table('Online food orders', date, ['Platform', 'Order ID', 'Time', 'Items', 'Order value', 'Net payout', 'Status'], await this.online.aggregate([
+        return this.table('Online food orders', date, ['Platform', 'Order ID', 'Time', 'Items', 'Order value', 'Status'], await this.online.aggregate([
           { $match: { businessDate: date } },
           { $sort: { createdAt: 1 } },
-          { $project: { row: ['$platform', '$orderId', { $dateToString: { date: '$createdAt', format: '%H:%M', timezone: 'Asia/Kolkata' } }, { $reduce: { input: '$items', initialValue: '', in: { $concat: ['$$value', { $cond: [{ $eq: ['$$value', ''] }, '', ', '] }, { $toString: '$$this.qty' }, '× ', '$$this.name'] } } }, num('$amount'), num('$payout'), '$status'] } },
+          { $project: { row: ['$platform', '$orderId', { $ifNull: ['$time', { $dateToString: { date: '$createdAt', format: '%H:%M', timezone: 'Asia/Kolkata' } }] }, { $reduce: { input: '$items', initialValue: '', in: { $concat: ['$$value', { $cond: [{ $eq: ['$$value', ''] }, '', ', '] }, { $toString: '$$this.qty' }, '× ', '$$this.name'] } } }, num('$amount'), '$status'] } },
         ]));
       default:
         throw badRequest('UNKNOWN_REPORT', `Unknown report. Use one of: ${REPORT_KEYS.join(', ')}`);

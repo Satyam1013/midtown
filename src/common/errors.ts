@@ -17,3 +17,7 @@ export const forbidden = (code: string, message: string) =>
   new ApiError(HttpStatus.FORBIDDEN, code, message);
 export const unauthorized = (code: string, message: string) =>
   new ApiError(HttpStatus.UNAUTHORIZED, code, message);
+
+/** Non-admin staff asked for, or tried to change, a day other than the open one. */
+export const pastDateRestricted = () =>
+  forbidden('PAST_DATE_RESTRICTED', 'Only the open business day is available to you');

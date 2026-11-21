@@ -18,7 +18,7 @@ export interface Ctx {
   app: INestApplication;
   api: () => ReturnType<typeof request>;
   model: <T = any>(name: string) => Model<T>;
-  token: Record<'OWNER' | 'MANAGER' | 'STAFF' | 'KITCHEN', string>;
+  token: Record<'ADMIN' | 'MANAGER' | 'STAFF' | 'KITCHEN', string>;
   today: string;
   roomId: (number: string) => Promise<string>;
   menuId: (name: string) => Promise<string>;
@@ -61,7 +61,7 @@ export async function bootApp(): Promise<Ctx> {
   const api = () => request(app.getHttpServer());
   const token = {} as Ctx['token'];
   let phone = 9100000000;
-  for (const role of ['OWNER', 'MANAGER', 'STAFF', 'KITCHEN'] as const) {
+  for (const role of ['ADMIN', 'MANAGER', 'STAFF', 'KITCHEN'] as const) {
     const number = String(phone++);
     await model('User').create({ name: role, phone: number, passwordHash, role: Role[role] });
     const res = await api().post('/api/v1/auth/staff/login').send({ identifier: number, password: PASSWORD }).expect(200);
@@ -70,7 +70,7 @@ export async function bootApp(): Promise<Ctx> {
 
   // Money postings need an open business day.
   const today = app.get(BusinessDateService).today();
-  await api().post('/api/v1/business-day/start').set({ Authorization: `Bearer ${token.OWNER}` })
+  await api().post('/api/v1/business-day/start').set({ Authorization: `Bearer ${token.ADMIN}` })
     .send({ businessDate: today, openingBalance: '0', time: '08:00' }).expect(200);
 
   return {
@@ -94,4 +94,18 @@ export async function checkIn(ctx: Ctx, number: string, guestName: string, phone
     .send({ roomId: await ctx.roomId(number), guestName, phone, nights: 2 })
     .expect(201);
   return res.body.data.stay;
+}
+
+/** A room of this type, by position, for desk bookings (which now always hold a room). */
+export async function roomOfType(ctx: Ctx, typeId: string, index = 0) {
+  const rooms = (await ctx.model('Room').find({ roomTypeId: typeId }).sort({ number: 1 }).lean()) as any[];
+  return String(rooms[index]._id);
+}
+
+/** A booking for several rooms with no room held, as guest-app requests are; the desk API needs one room. */
+export async function multiRoomBooking(ctx: Ctx, body: { rooms: { roomTypeId: string; guests: number }[] } & Record<string, unknown>) {
+  const { BookingsService } = await import('../src/bookings/bookings.service');
+  const { serialize } = await import('../src/common/interceptors/response.interceptor');
+  // Shaped as the API would return it: id, numbers for money.
+  return serialize(await ctx.app.get(BookingsService).create(body as any));
 }

@@ -6,6 +6,8 @@ import { businessDate, buildSchema, LIVE, money, ref } from '../../database/buil
 export enum StayStatus {
   IN_HOUSE = 'IN_HOUSE',
   CHECKED_OUT = 'CHECKED_OUT',
+  /** Voided by DELETE /stays/:id: created by mistake. Also soft-deleted. */
+  CANCELLED = 'CANCELLED',
 }
 
 /**
@@ -106,6 +108,13 @@ export class Stay {
   /** The main guest. Null only on stays from before customers, until migrated. */
   @Prop(ref('Customer', { required: false }))
   customerId: Types.ObjectId | null;
+
+  /** Voided stays only: who voided it and why. */
+  @Prop(ref('User', { required: false }))
+  deletedByUserId: Types.ObjectId | null;
+
+  @Prop({ type: String, default: null })
+  voidReason: string | null;
 }
 
 export type StayDocument = HydratedDocument<Stay>;
@@ -121,3 +130,4 @@ StaySchema.index(
 StaySchema.index({ roomId: 1, checkIn: -1 });
 StaySchema.index({ status: 1, checkIn: -1 });
 StaySchema.index({ phone: 1 });
+StaySchema.index({ checkIn: 1 }); // date-range reports

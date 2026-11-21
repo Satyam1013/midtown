@@ -1,11 +1,11 @@
-import { Body, Controller, Get, Headers, HttpCode, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, Param, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Types } from 'mongoose';
-import { CurrentUser, Roles } from '../common/decorators';
+import { AdminOnly, CurrentUser, Roles } from '../common/decorators';
 import { DESK, MANAGEMENT } from '../common/enums';
 import { Principal } from '../common/interfaces/principal';
 import { ParseObjectIdPipe } from '../common/pipes/parse-object-id.pipe';
-import { AddGuestDto, BillPrintDto, CheckInDto, CheckOutDto, ShiftRoomDto, UpdateStayDto } from './dto/stay.dto';
+import { AddGuestDto, BillPrintDto, CheckInDto, CheckOutDto, ShiftRoomDto, UpdateStayDto, VoidStayDto } from './dto/stay.dto';
 import { StayBillService } from './stay-bill.service';
 import { StaysService } from './stays.service';
 
@@ -50,6 +50,14 @@ export class StaysController {
   @Patch(':id')
   update(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @Body() dto: UpdateStayDto, @CurrentUser() user: Principal) {
     return this.stays.update(id, dto, user);
+  }
+
+  /** ADMIN only: void an in-house stay created by mistake. 204; 409 STAY_CLOSED / STAY_HAS_PAYMENTS. */
+  @AdminOnly()
+  @HttpCode(204)
+  @Delete(':id')
+  async remove(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @Body() dto: VoidStayDto, @CurrentUser() user: Principal) {
+    await this.stays.voidStay(id, user, dto?.reason);
   }
 
   @HttpCode(201)

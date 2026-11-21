@@ -1,8 +1,8 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Types } from 'mongoose';
-import { Roles } from '../common/decorators';
-import { ALL_STAFF, Role } from '../common/enums';
+import { AdminOnly, Roles } from '../common/decorators';
+import { ALL_STAFF } from '../common/enums';
 import { ParseObjectIdPipe } from '../common/pipes/parse-object-id.pipe';
 import { CreateRoomTypeDto, UpdateTariffDto } from './dto/room-type.dto';
 import { RoomTypesService } from './room-types.service';
@@ -19,13 +19,13 @@ export class RoomTypesController {
     return this.types.list();
   }
 
-  @Roles(Role.OWNER)
+  @AdminOnly()
   @Patch(':id')
   updateTariff(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @Body() dto: UpdateTariffDto) {
     return this.types.updateTariff(id, dto);
   }
 
-  @Roles(Role.OWNER)
+  @AdminOnly()
   @Post()
   create(@Body() dto: CreateRoomTypeDto) {
     return this.types.create(dto);

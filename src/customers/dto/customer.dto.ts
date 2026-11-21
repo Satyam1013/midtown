@@ -34,6 +34,16 @@ export class CustomerListQueryDto {
   @ApiPropertyOptional({ type: String, enum: ['true', 'false'] })
   @IsOptional() @IsIn(['true', 'false'])
   hasCredit?: 'true' | 'false';
+
+  /** Same as hasCredit: true lists only customers with dueAmount > 0. */
+  @ApiPropertyOptional({ type: String, enum: ['true', 'false'] })
+  @IsOptional() @IsIn(['true', 'false'])
+  hasDue?: 'true' | 'false';
+
+  /** recent (default): last visit first. due_desc: most owed first. */
+  @ApiPropertyOptional({ enum: ['recent', 'due_desc'] })
+  @IsOptional() @IsIn(['recent', 'due_desc'])
+  sort?: 'recent' | 'due_desc';
 }
 
 export class UpdateCustomerDto {

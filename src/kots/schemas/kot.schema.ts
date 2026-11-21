@@ -3,10 +3,15 @@ import { HydratedDocument, Types } from 'mongoose';
 import { buildSchema, money, ref } from '../../database/build-schema';
 
 export enum KotStatus {
+  /** Just placed; the kitchen hasn't started. Apps may show it as PREPARING. */
   PLACED = 'PLACED',
   PREPARING = 'PREPARING',
+  READY = 'READY',
+  /** Room service on its way (kitchen and guest apps). */
   ON_THE_WAY = 'ON_THE_WAY',
   SERVED = 'SERVED',
+  /** Final. A ROOM KOT's folio charge is removed; never counted in sales or reports. */
+  CANCELLED = 'CANCELLED',
 }
 
 export enum KotBillTo {
@@ -45,6 +50,10 @@ export class Kot {
   /** Running KOT number shown on the kitchen ticket. */
   @Prop({ required: true, min: 1 })
   number: number;
+
+  /** The business day the order was placed on (the open day, else the hotel's calendar date). */
+  @Prop({ type: String, default: null, match: /^\d{4}-\d{2}-\d{2}$/ })
+  businessDate: string | null;
 
   @Prop(ref('Stay', { required: false }))
   stayId: Types.ObjectId | null;
@@ -96,3 +105,4 @@ KotSchema.index({ number: 1 }, { unique: true });
 KotSchema.index({ status: 1, createdAt: 1 }); // kitchen queue
 KotSchema.index({ stayId: 1, createdAt: -1 }); // guest order tracker
 KotSchema.index({ createdAt: -1 });
+KotSchema.index({ businessDate: 1, createdAt: -1 }); // daily list and date-range reports

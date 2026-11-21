@@ -53,7 +53,7 @@ export class StayBillService {
     const [kots, entries, room] = await Promise.all([
       this.kots.find({ _id: { $in: kotIds } }).lean(),
       this.entries.find({ _id: { $in: lines.map((l) => l.entryId).filter(Boolean) } }).lean(),
-      this.rooms.findById(stay.roomId).select('number').lean(),
+      this.rooms.findById(stay.roomId).select('number').setOptions({ withDeleted: true }).lean(),
     ]);
     const kotOf = new Map(kots.map((k) => [String(k._id), k]));
     const entryOf = new Map(entries.map((e) => [String(e._id), e]));

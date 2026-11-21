@@ -1,5 +1,11 @@
 import { normalizePhone } from '../common/utils/phone';
-import { occupancyRate } from '../config/pricing';
+import { occupancyRate, splitGuests } from '../config/pricing';
+import { AuditService } from '../audit/audit.service';
+import { AuditAction } from '../audit/schemas/audit-log.schema';
+import { Principal, userObjectId } from '../common/interfaces/principal';
+import { Stay } from '../stays/schemas/stay.schema';
+import { HOLDING, RoomHoldsService } from '../rooms/room-holds.service';
+import { Room } from '../rooms/schemas/room.schema';
 
 /** Bookings sold by an OTA: the amount is what the OTA charged, not our price. */
 const OTA_SOURCES = ['MakeMyTrip', 'Booking.com', 'Goibibo', 'Agoda', 'Airbnb'];
@@ -22,7 +28,7 @@ import { TransactionService } from '../database/transaction.service';
 import { EventsService } from '../notifications/events.service';
 import { RoomTypesService } from '../room-types/room-types.service';
 import { RoomType } from '../room-types/schemas/room-type.schema';
-import { BookingQueryDto, CreateBookingDto, GuestBookingDto } from './dto/booking.dto';
+import { BookingQueryDto, CreateBookingDto, GuestBookingDto, UpdateBookingDto } from './dto/booking.dto';
 import { Booking, BookingSource, BookingStatus } from './schemas/booking.schema';
 
 @Injectable()
@@ -36,33 +42,82 @@ export class BookingsService {
     private readonly events: EventsService,
     private readonly roomTypes: RoomTypesService,
     private readonly customers: CustomersService,
+    @InjectModel(Stay.name) private readonly stays: Model<Stay>,
+    private readonly audit: AuditService,
+    @InjectModel(Room.name) private readonly roomModel: Model<Room>,
+    private readonly holds: RoomHoldsService,
   ) {}
 
+  /** Soonest arrival first. */
   async list(q: BookingQueryDto) {
     const { page, limit, skip } = pageOf(q);
-    const filter = { ...(q.status ? { status: q.status } : {}), ...(q.date ? { arrivalDate: q.date } : {}) };
+    if (q.from && q.to && q.to < q.from) throw badRequest('INVALID_RANGE', '`from` must not be after `to`');
+    const status: Record<string, unknown> = {};
+    if (q.status?.length) status.$in = q.status;
+    if (q.excludeStatus?.length) status.$nin = q.excludeStatus;
+    const arrival: Record<string, string> = {};
+    if (q.date) arrival.$eq = q.date;
+    if (q.from) arrival.$gte = q.from;
+    if (q.to) arrival.$lte = q.to;
+    const filter = { ...(Object.keys(status).length ? { status } : {}), ...(Object.keys(arrival).length ? { arrivalDate: arrival } : {}) };
     const [items, total] = await Promise.all([
-      this.bookings.find(filter).sort({ arrivalDate: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+      this.bookings.find(filter).sort({ arrivalDate: 1, createdAt: 1 }).skip(skip).limit(limit).lean(),
       this.bookings.countDocuments(filter),
     ]);
-    return new Paged(items, { page, limit, total });
+    return new Paged(await this.withRoomNumbers(items), { page, limit, total });
   }
 
-  /** Front desk. Priced on the server; an OTA booking keeps the amount the OTA charged. */
-  async create(dto: CreateBookingDto) {
-    const priced = await this.priceLines(dto, { maxNights: null });
+  /** Adds roomNumber, as GET /bookings shows each booking. */
+  private async withRoomNumbers<T extends { roomId?: Types.ObjectId | null }>(items: T[]) {
+    const rooms = await this.roomModel.find({ _id: { $in: items.map((b) => b.roomId).filter(Boolean) } }).select('number').setOptions({ withDeleted: true }).lean();
+    const numberOf = new Map(rooms.map((r) => [String(r._id), r.number]));
+    return items.map((b) => ({ ...b, roomId: b.roomId ?? null, roomNumber: b.roomId ? (numberOf.get(String(b.roomId)) ?? null) : null }));
+  }
+
+  /**
+   * Front desk. Priced on the server; an OTA booking keeps the amount the OTA charged.
+   * With a room (always, from the desk app) the booking is for that one room, which
+   * is checked and held in the same transaction: 409 ROOM_NOT_AVAILABLE.
+   */
+  async create(dto: Omit<CreateBookingDto, 'roomId' | 'rooms'> & { roomId?: string; rooms?: CreateBookingDto['rooms'] }) {
+    let lines = dto.rooms;
+    if (dto.roomId) {
+      if (lines && lines.length > 1) throw badRequest('ONE_ROOM_ONLY', 'A booking with a room is for that one room');
+      const room = await this.roomModel.findById(dto.roomId).lean();
+      if (!room) throw notFound('Room');
+      lines = [{ roomTypeId: String(room.roomTypeId), guests: dto.pax ?? lines?.[0]?.guests ?? 1 }];
+    }
+    if (!lines?.length) throw badRequest('ROOM_REQUIRED', 'Choose the room for this booking');
+    const priced = await this.priceLines({ ...dto, rooms: lines, pax: dto.roomId ? null : dto.pax }, { maxNights: null });
     const ota = OTA_SOURCES.includes(dto.source);
     if (ota && dto.amount === undefined) throw badRequest('AMOUNT_REQUIRED', 'Enter the amount the OTA booking was sold for');
     try {
-      const booking = await this.bookings.create({
-        ...this.fieldsOf(dto),
-        source: dto.source,
-        status: BookingStatus.CONFIRMED,
-        payment: dto.payment ?? '',
-        ref: dto.ref || null,
-        customerId: (await this.customers.byPhone(dto.phone, dto.guestName))?._id ?? null,
-        ...this.linesOf(priced),
-        amount: ota ? toD128(dto.amount!) : toD128(priced.amount),
+      const customerId = (await this.customers.byPhone(dto.phone, dto.guestName))?._id ?? null;
+      const booking = await this.tx.run(async ({ session, afterCommit }) => {
+        if (dto.roomId) {
+          await this.holds.assertBookable(
+            { roomId: dto.roomId, roomTypeId: dto.roomTypeId, pax: priced.pax, arrivalDate: dto.arrivalDate, departureDate: dto.departureDate },
+            session,
+          );
+        }
+        const [created] = await this.bookings.create(
+          [
+            {
+              ...this.fieldsOf(dto),
+              source: dto.source,
+              status: BookingStatus.CONFIRMED,
+              payment: dto.payment ?? '',
+              ref: dto.ref || null,
+              customerId,
+              roomId: dto.roomId ?? null,
+              ...this.linesOf(priced),
+              amount: ota ? toD128(dto.amount!) : toD128(priced.amount),
+            },
+          ],
+          { session },
+        );
+        await this.holds.sync([created.roomId], session, afterCommit);
+        return created;
       });
       this.announce(booking);
       return booking;
@@ -164,7 +219,7 @@ export class BookingsService {
   }
 
   /** Booking fields common to every source. `rooms` (a count) and `roomTypeId` (the first line's) stay for older readers. */
-  private fieldsOf(dto: GuestBookingDto | CreateBookingDto) {
+  private fieldsOf(dto: { guestName: string; phone?: string; arrivalDate: string; departureDate: string; note?: string }) {
     return {
       guestName: dto.guestName.trim(),
       phone: normalizePhone(dto.phone),
@@ -189,9 +244,138 @@ export class BookingsService {
     };
   }
 
+  /**
+   * Edit any field. Once a room of the booking is checked in, the fields that
+   * shape the stay (arrival, rooms, room type, guests) are locked: 409 BOOKING_LOCKED.
+   * Room type, rooms or guests reprice the booking at today's tariff; a date
+   * change alone keeps each room's booked rate and only changes the nights.
+   */
+  async update(id: Types.ObjectId, dto: UpdateBookingDto, user: Principal) {
+    try {
+      const booking = await this.tx.run(async ({ session }) => {
+        const b = await this.bookings.findById(id).session(session);
+        if (!b) throw notFound('Booking');
+        const before = b.toObject();
+        const lines = b.roomLines;
+        const oldRoomId = b.roomId;
+        const roomChanged = dto.roomId !== undefined && dto.roomId !== String(b.roomId ?? '');
+        const newRoomId = dto.roomId ?? (b.roomId ? String(b.roomId) : null);
+        if (newRoomId) {
+          if (dto.rooms !== undefined && dto.rooms > 1) throw badRequest('ONE_ROOM_ONLY', 'A booking with a room is for that one room');
+          const room = await this.roomModel.findById(newRoomId).session(session).lean();
+          if (!room) throw notFound('Room');
+          // A new room brings its own type unless one was sent (which must then match).
+          if (roomChanged && dto.roomTypeId === undefined) dto.roomTypeId = String(room.roomTypeId);
+        }
+        const typeChanged = dto.roomTypeId !== undefined && lines.some((l) => String(l.roomTypeId) !== dto.roomTypeId);
+        const roomsChanged = dto.rooms !== undefined && dto.rooms !== lines.length;
+        const paxChanged = dto.pax !== undefined && dto.pax !== b.pax;
+        const arrivalChanged = dto.arrivalDate !== undefined && dto.arrivalDate !== b.arrivalDate;
+        if (this.isClaimed(b) && (typeChanged || roomsChanged || paxChanged || arrivalChanged || roomChanged)) {
+          throw conflict('BOOKING_LOCKED', 'A room of this booking is checked in: arrival, room, room type and guests can no longer change');
+        }
+
+        if (b.status === BookingStatus.NO_SHOW && dto.status && dto.status !== BookingStatus.NO_SHOW && dto.status !== BookingStatus.CANCELLED) {
+          if (!arrivalChanged) throw badRequest('ARRIVAL_REQUIRED', 'Give the new arrival date for a guest who is coming late');
+        }
+        const arrivalDate = dto.arrivalDate ?? b.arrivalDate;
+        const departureDate = dto.departureDate ?? b.departureDate;
+        this.assertDates(arrivalDate, departureDate);
+        const source = dto.source ?? b.source;
+        let serverAmount = dec(String(b.amount));
+        if (typeChanged || roomsChanged || paxChanged) {
+          const count = dto.rooms ?? lines.length;
+          const types = Array.from({ length: count }, (_, i) => dto.roomTypeId ?? String((lines[i] ?? lines[0]).roomTypeId));
+          const guests = roomsChanged || paxChanged ? splitGuests(dto.pax ?? Math.max(b.pax, count), count) : lines.map((l) => l.guests);
+          const priced = await this.priceLines(
+            { rooms: types.map((roomTypeId, i) => ({ roomTypeId, guests: guests[i] })), pax: dto.pax ?? null, arrivalDate, departureDate },
+            { maxNights: null },
+          );
+          b.set(this.linesOf(priced));
+          serverAmount = priced.amount;
+        } else if (dto.arrivalDate !== undefined || dto.departureDate !== undefined) {
+          const nights = this.dates.daysBetween(arrivalDate, departureDate);
+          serverAmount = lines.reduce((t, l) => t.plus(dec(String(l.rate))), dec(0)).times(nights);
+        }
+        const ota = OTA_SOURCES.includes(source);
+        b.amount = toD128(ota ? (dto.amount ?? String(b.amount)) : serverAmount);
+
+        b.set({ arrivalDate, departureDate, source });
+        if (dto.ref !== undefined) b.ref = dto.ref?.trim() || null;
+        if (dto.guestName !== undefined) b.guestName = dto.guestName.trim();
+        if (dto.phone !== undefined) {
+          b.phone = normalizePhone(dto.phone);
+          // A guest-app booking stays with the customer who made it.
+          if (b.source !== BookingSource.GuestApp) b.customerId = (await this.customers.byPhone(dto.phone, b.guestName, session))?._id ?? null;
+        }
+        if (dto.payment !== undefined) b.payment = dto.payment;
+        if (dto.note !== undefined) b.note = dto.note;
+        if (dto.status !== undefined) b.status = dto.status;
+
+        // Hold the room again whenever what it is held for changed, or the booking comes back to life.
+        const datesChanged = arrivalChanged || (dto.departureDate !== undefined && dto.departureDate !== before.departureDate);
+        if (newRoomId && HOLDING.includes(b.status) && (roomChanged || typeChanged || roomsChanged || paxChanged || datesChanged || !HOLDING.includes(before.status))) {
+          await this.holds.assertBookable(
+            { roomId: newRoomId, roomTypeId: b.roomTypeId, pax: b.pax, arrivalDate: b.arrivalDate, departureDate: b.departureDate, exceptBookingId: b._id },
+            session,
+          );
+        }
+        b.roomId = newRoomId ? new Types.ObjectId(newRoomId) : null;
+        await b.save({ session });
+        await this.holds.sync([oldRoomId, b.roomId], session);
+
+        const changed = Object.fromEntries(
+          Object.keys(dto)
+            .filter((k) => String((before as any)[k]) !== String((b as any)[k]))
+            .map((k) => [k, { from: (before as any)[k] ?? null, to: (b as any)[k] ?? null }]),
+        );
+        await this.audit.record(AuditAction.BOOKING_UPDATE, null, userObjectId(user), { bookingId: String(id), ref: b.ref, changed }, session);
+        return b;
+      });
+      this.events.toHotel('booking.updated', { id: String(booking._id), status: booking.status, source: booking.source });
+      const [shown] = await this.withRoomNumbers([(await this.bookings.findById(id).lean())!]);
+      return shown;
+    } catch (err: any) {
+      if (err?.code === 11000) throw conflict('BOOKING_EXISTS', 'A booking with this source and reference already exists');
+      throw err;
+    }
+  }
+
+  /**
+   * Soft delete: gone from GET /bookings, kept for reports and the audit trail.
+   * A booking with a checked-in room can only be cancelled: 409 BOOKING_IN_USE.
+   */
+  async remove(id: Types.ObjectId, user: Principal) {
+    const booking = await this.tx.run(async ({ session }) => {
+      const b = await this.bookings.findById(id).session(session);
+      if (!b) throw notFound('Booking');
+      if (this.isClaimed(b) || (await this.stays.exists({ bookingId: id }).session(session))) {
+        throw conflict('BOOKING_IN_USE', 'This booking has a checked-in stay. Cancel it instead of deleting it.');
+      }
+      b.set('deletedAt', new Date());
+      await b.save({ session });
+      await this.holds.sync([b.roomId], session);
+      await this.audit.record(
+        AuditAction.BOOKING_DELETE,
+        null,
+        userObjectId(user),
+        { bookingId: String(id), source: b.source, ref: b.ref, guestName: b.guestName, arrivalDate: b.arrivalDate, status: b.status, amount: b.amount },
+        session,
+      );
+      return b;
+    });
+    this.events.toHotel('booking.deleted', { id: String(booking._id), status: booking.status, source: booking.source });
+  }
+
+  /** A room of the booking has been checked in. */
+  private isClaimed(b: { status: BookingStatus; roomLines: { stayId: unknown }[] }) {
+    return b.status === BookingStatus.CHECKED_IN || b.status === BookingStatus.CHECKED_OUT || b.roomLines.some((l) => l.stayId);
+  }
+
   async setStatus(id: Types.ObjectId, status: BookingStatus) {
     const booking = await this.bookings.findByIdAndUpdate(id, { $set: { status } }, { new: true });
     if (!booking) throw notFound('Booking');
+    await this.holds.sync([booking.roomId], null);
     return booking;
   }
 

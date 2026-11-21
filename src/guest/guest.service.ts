@@ -36,6 +36,7 @@ const APP_STATUS: Record<BookingStatus, string> = {
   [BookingStatus.CHECKED_IN]: 'CHECKED_IN',
   [BookingStatus.CHECKED_OUT]: 'CHECKED_OUT',
   [BookingStatus.CANCELLED]: 'CANCELLED',
+  [BookingStatus.NO_SHOW]: 'NO_SHOW',
 };
 const stayStatus = (s: StayStatus) => (s === StayStatus.IN_HOUSE ? 'CHECKED_IN' : 'CHECKED_OUT');
 
@@ -74,7 +75,7 @@ export class GuestService {
     if (!bookings.length) return { bookings: [] };
     const stays = await this.stays.find({ bookingId: { $in: bookings.map((b) => b._id) } }).sort({ createdAt: 1 }).lean();
     const [rooms, balances] = await Promise.all([
-      this.rooms.find({ _id: { $in: stays.map((s) => s.roomId) } }).select('number roomTypeId').lean(),
+      this.rooms.find({ _id: { $in: stays.map((s) => s.roomId) } }).select('number roomTypeId').setOptions({ withDeleted: true }).lean(),
       this.folio.balances(stays.map((s) => s._id)),
     ]);
     const types = await this.types
@@ -150,7 +151,7 @@ export class GuestService {
     const stays = await this.stays.find({ bookingId: booking._id }).lean();
     const [lines, rooms] = await Promise.all([
       this.folioLines.find({ stayId: { $in: stays.map((s) => s._id) } }).sort({ createdAt: 1 }).lean(),
-      this.rooms.find({ _id: { $in: stays.map((s) => s.roomId) } }).select('number').lean(),
+      this.rooms.find({ _id: { $in: stays.map((s) => s.roomId) } }).select('number').setOptions({ withDeleted: true }).lean(),
     ]);
     const roomNumberOf = new Map(stays.map((s) => [String(s._id), rooms.find((r) => String(r._id) === String(s.roomId))?.number ?? null]));
     const paidLines = lines.filter((l) => l.source === FolioSource.PAYMENT || l.source === FolioSource.REFUND);
@@ -212,7 +213,7 @@ export class GuestService {
     const [stay] = await this.scope.requireActiveStays(this.scope.customerId(user), [dto.stayId]);
     const { stayId: _ignored, ...order } = dto;
     const placed = await this.kots.place({ ...order, stayId: stay._id, source: KotSource.GUEST_APP });
-    const room = await this.rooms.findById(stay.roomId).select('number').lean();
+    const room = await this.rooms.findById(stay.roomId).select('number').setOptions({ withDeleted: true }).lean();
     return { ...placed, roomNumber: room?.number ?? null };
   }
 
@@ -220,7 +221,7 @@ export class GuestService {
     const active = await this.scope.activeStays(this.scope.customerId(user));
     const [kots, rooms] = await Promise.all([
       this.kotModel.find({ stayId: { $in: active.map((s) => s._id) } }).sort({ createdAt: -1 }).lean(),
-      this.rooms.find({ _id: { $in: active.map((s) => s.roomId) } }).select('number').lean(),
+      this.rooms.find({ _id: { $in: active.map((s) => s.roomId) } }).select('number').setOptions({ withDeleted: true }).lean(),
     ]);
     const numberOf = new Map(active.map((s) => [String(s._id), rooms.find((r) => String(r._id) === String(s.roomId))?.number ?? null]));
     return kots.map((k) => ({ ...k, roomNumber: numberOf.get(String(k.stayId)) ?? null }));
@@ -243,7 +244,7 @@ export class GuestService {
   /** Requests sent together become one row with the rooms they cover. */
   private async group(rows: any[]) {
     const stays = await this.stays.find({ _id: { $in: rows.map((r) => r.stayId) } }).select('roomId').lean();
-    const rooms = await this.rooms.find({ _id: { $in: stays.map((s) => s.roomId) } }).select('number').lean();
+    const rooms = await this.rooms.find({ _id: { $in: stays.map((s) => s.roomId) } }).select('number').setOptions({ withDeleted: true }).lean();
     const numberOf = (stayId: unknown) => {
       const s = stays.find((x) => String(x._id) === String(stayId));
       return rooms.find((r) => String(r._id) === String(s?.roomId))?.number ?? null;

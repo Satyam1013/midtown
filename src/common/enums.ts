@@ -2,7 +2,7 @@
 // front-ends use, so they are stored and returned verbatim.
 
 export enum Role {
-  OWNER = 'OWNER',
+  ADMIN = 'ADMIN',
   MANAGER = 'MANAGER',
   STAFF = 'STAFF',
   KITCHEN = 'KITCHEN',
@@ -11,9 +11,15 @@ export enum Role {
   VISITOR = 'VISITOR',
 }
 
-export const ALL_STAFF = [Role.OWNER, Role.MANAGER, Role.STAFF, Role.KITCHEN];
-export const DESK = [Role.OWNER, Role.MANAGER, Role.STAFF];
-export const MANAGEMENT = [Role.OWNER, Role.MANAGER];
+/** Owner accounts stored before the ADMIN rename; read as ADMIN until migrate:roles runs. */
+export const LEGACY_OWNER = 'OWNER';
+
+/** A stored staff role as the API uses it. */
+export const staffRole = (stored: string): Role => (stored === LEGACY_OWNER ? Role.ADMIN : (stored as Role));
+
+export const ALL_STAFF = [Role.ADMIN, Role.MANAGER, Role.STAFF, Role.KITCHEN];
+export const DESK = [Role.ADMIN, Role.MANAGER, Role.STAFF];
+export const MANAGEMENT = [Role.ADMIN, Role.MANAGER];
 
 export enum PaymentMode {
   CASH = 'CASH',

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { ClientSession, Model, Types } from 'mongoose';
 import { CashTxn } from '../cash-transactions/schemas/cash-txn.schema';
 import { pageOf } from '../common/dto/common.dto';
 import { DebitCredit } from '../common/enums';
@@ -10,14 +10,19 @@ import { BusinessDateService } from '../common/services/business-date.service';
 import { dec, sum, toD128 } from '../common/utils/money';
 import { TransactionService } from '../database/transaction.service';
 import { DaybookService } from '../daybook/daybook.service';
-import { CreateExpenseDto, ExpenseListQueryDto, ExpensePaymentDto } from './dto/expense.dto';
+import { CreateExpenseDto, ExpenseListQueryDto, ExpensePaymentDto, UpdateExpenseDto } from './dto/expense.dto';
+import { Staff } from '../staff/schemas/staff.schema';
 import { LedgerService } from '../entries/ledger.service';
 import { EntrySource } from '../entries/schemas/day-register-entry.schema';
 import { AuditService } from '../audit/audit.service';
 import { AuditAction } from '../audit/schemas/audit-log.schema';
 import { EventsService } from '../notifications/events.service';
-import { badRequest, notFound } from '../common/errors';
+import { badRequest, conflict, notFound } from '../common/errors';
 import { Expense } from './schemas/expense.schema';
+
+/** The head the app sends for an advance against a staff member's salary. */
+export const SALARY_ADVANCE = 'Salary advance';
+const isAdvance = (head: string | undefined | null) => (head ?? '').trim().toLowerCase() === SALARY_ADVANCE.toLowerCase();
 
 @Injectable()
 export class ExpensesService {
@@ -30,7 +35,17 @@ export class ExpensesService {
     private readonly ledger: LedgerService,
     private readonly audit: AuditService,
     private readonly events: EventsService,
+    @InjectModel(Staff.name) private readonly staff: Model<Staff>,
   ) {}
+
+  /** A salary advance names an existing staff member and is paid now; any staffId sent must exist. */
+  private async assertStaff(head: string, staffId: string | Types.ObjectId | null | undefined, onCredit: boolean, session?: ClientSession) {
+    if (isAdvance(head)) {
+      if (!staffId) throw badRequest('STAFF_REQUIRED', 'Choose the staff member for a salary advance');
+      if (onCredit) throw badRequest('ADVANCE_ON_CREDIT', 'A salary advance is paid now, not on credit');
+    }
+    if (staffId && !(await this.staff.exists({ _id: staffId }).session(session ?? null))) throw badRequest('STAFF_NOT_FOUND', 'That staff member does not exist');
+  }
 
   async list(q: ExpenseListQueryDto) {
     const { page, limit, skip } = pageOf(q);
@@ -66,7 +81,8 @@ export class ExpensesService {
    * On the open business day. A cash expense writes its DEBIT cash line with it;
    * a credit expense (onCredit) is booked as an expense with nothing paid and moves no money.
    */
-  create(dto: CreateExpenseDto, user: Principal) {
+  async create(dto: CreateExpenseDto, user: Principal) {
+    await this.assertStaff(dto.head, dto.staffId, !!dto.onCredit);
     if (dto.onCredit) return this.createOnCredit(dto, user);
     if (!dto.mode) throw badRequest('MODE_REQUIRED', 'Choose how the expense was paid');
     return this.tx.run(async ({ session }) => {
@@ -125,6 +141,101 @@ export class ExpensesService {
       await this.audit.record(AuditAction.EXPENSE_CREDIT, null, userObjectId(user), { expenseId: expense._id, vendor: expense.vendor, amount, dueDate: expense.dueDate }, session, businessDate);
       return expense;
     });
+  }
+
+  /**
+   * ADMIN: correct an expense of the open day. A paid-now expense's cash line is
+   * rewritten with it in one transaction, so the day book moves by exactly the
+   * difference. A closed day is never edited: 409 DAY_CLOSED.
+   */
+  async update(id: Types.ObjectId, dto: UpdateExpenseDto, user: Principal) {
+    const expense = await this.tx.run(async ({ session }) => {
+      const e = await this.expenses.findById(id).session(session);
+      if (!e) throw notFound('Expense');
+      await this.daybook.assertEditable(e.businessDate, session);
+      if (dto.onCredit !== undefined && dto.onCredit !== !!e.onCredit) {
+        throw badRequest('ON_CREDIT_LOCKED', 'An expense can’t be switched between paid now and on credit; delete it and add it again');
+      }
+      const before = e.toObject();
+      const head = dto.head?.trim() ?? e.head;
+      const staffId = dto.staffId === undefined ? e.staffId : dto.staffId;
+      await this.assertStaff(head, staffId, !!e.onCredit, session);
+
+      if (e.onCredit) {
+        if (dto.mode) throw badRequest('MODE_NOT_ALLOWED', 'An expense on credit has no payment mode');
+        if (dto.amount !== undefined) {
+          const paid = dec(e.paidAmount ?? 0);
+          if (dec(dto.amount).lt(paid)) {
+            throw conflict('EXPENSE_PAYMENTS_EXIST', `${paid.toFixed(2)} has already been paid on this expense; the amount can’t go below that`);
+          }
+          e.amount = toD128(dto.amount);
+          e.dueAmount = toD128(dec(dto.amount).minus(paid));
+        }
+        if (dto.dueDate !== undefined) e.dueDate = dto.dueDate;
+      } else {
+        if (dto.dueDate) throw badRequest('DUE_DATE_NOT_ALLOWED', 'Only an expense on credit has a due date');
+        if (dto.amount !== undefined) {
+          e.amount = toD128(dto.amount);
+          e.paidAmount = e.amount;
+        }
+        if (dto.mode) e.mode = dto.mode;
+      }
+      e.head = head;
+      if (dto.vendor !== undefined) e.vendor = dto.vendor.trim();
+      if (dto.narration !== undefined) e.narration = dto.narration;
+      e.staffId = staffId ? new Types.ObjectId(String(staffId)) : null;
+      if (e.onCredit && !e.vendor?.trim()) throw badRequest('VENDOR_REQUIRED', 'Name the vendor for an expense on credit');
+      await e.save({ session });
+
+      if (!e.onCredit && e.txnId) {
+        await this.cash.updateOne(
+          { _id: e.txnId },
+          { $set: { head: e.head, mode: e.mode, amount: e.amount, narration: e.narration || e.vendor || e.head } },
+          { session },
+        );
+      }
+      const changed = Object.fromEntries(
+        ['head', 'vendor', 'staffId', 'amount', 'narration', 'mode', 'dueDate']
+          .filter((k) => String((before as any)[k] ?? '') !== String((e as any)[k] ?? ''))
+          .map((k) => [k, { from: (before as any)[k] ?? null, to: (e as any)[k] ?? null }]),
+      );
+      await this.audit.record(AuditAction.EXPENSE_UPDATE, null, userObjectId(user), { expenseId: String(id), changed }, session, e.businessDate);
+      return e;
+    });
+    this.events.toHotel('expense.updated', { id: String(id), businessDate: expense.businessDate });
+    return this.expenses.findById(id).lean();
+  }
+
+  /**
+   * ADMIN: soft-deletes an expense of the open day with its cash line, so the day
+   * book, register and reports drop it together. A credit expense with payments
+   * is refused (409 EXPENSE_PAYMENTS_EXIST): those payments are day-book lines,
+   * possibly on other days, and are left for the owner to deal with.
+   */
+  async remove(id: Types.ObjectId, user: Principal) {
+    const expense = await this.tx.run(async ({ session }) => {
+      const e = await this.expenses.findById(id).session(session);
+      if (!e) throw notFound('Expense');
+      await this.daybook.assertEditable(e.businessDate, session);
+      if (e.onCredit && (dec(e.paidAmount ?? 0).gt(0) || e.payments.length)) {
+        throw conflict('EXPENSE_PAYMENTS_EXIST', 'Payments have been made on this expense; it can’t be deleted');
+      }
+      const now = new Date();
+      if (e.txnId) await this.cash.updateOne({ _id: e.txnId }, { $set: { deletedAt: now } }, { session });
+      await this.cash.updateMany({ expenseId: e._id }, { $set: { deletedAt: now } }, { session });
+      e.set({ deletedAt: now, deletedByUserId: userObjectId(user) });
+      await e.save({ session });
+      await this.audit.record(
+        AuditAction.EXPENSE_DELETE,
+        null,
+        userObjectId(user),
+        { expenseId: String(id), before: { head: e.head, vendor: e.vendor, staffId: e.staffId, amount: e.amount, mode: e.mode, onCredit: e.onCredit, narration: e.narration, time: e.time } },
+        session,
+        e.businessDate,
+      );
+      return e;
+    });
+    this.events.toHotel('expense.updated', { id: String(id), businessDate: expense.businessDate, deleted: true });
   }
 
   /** Pays (part of) a credit expense: a DEBIT day-book line on the open business day. */

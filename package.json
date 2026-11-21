@@ -20,7 +20,9 @@
     "migrate:customers": "ts-node -r tsconfig-paths/register src/database/seeds/migrate-customers.ts",
     "migrate:guest-bookings": "ts-node -r tsconfig-paths/register src/database/seeds/migrate-guest-bookings.ts",
     "migrate:settlements": "ts-node -r tsconfig-paths/register src/database/seeds/migrate-settlements.ts",
-    "migrate:room-type-rates": "ts-node -r tsconfig-paths/register src/database/seeds/migrate-room-type-rates.ts"
+    "migrate:room-type-rates": "ts-node -r tsconfig-paths/register src/database/seeds/migrate-room-type-rates.ts",
+    "migrate:roles": "ts-node -r tsconfig-paths/register src/database/seeds/migrate-roles.ts",
+    "migrate:kot-dates": "ts-node -r tsconfig-paths/register src/database/seeds/migrate-kot-dates.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.2.8",

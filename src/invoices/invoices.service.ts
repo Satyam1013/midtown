@@ -1,3 +1,4 @@
+import { Role } from '../common/enums';
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -42,7 +43,9 @@ export class InvoicesService {
   }
 
   async create(dto: CreateInvoiceDto, user: Principal) {
-    this.dates.assertAllowed(dto.businessDate, user);
+    // Non-admin staff were already held to the open business day (@OpenDayOnly),
+    // which can run past midnight, so only an admin's free date is checked here.
+    if (user.role === Role.ADMIN) this.dates.assertAllowed(dto.businessDate, user);
     if (dto.stayId && !(await this.stays.exists({ _id: dto.stayId }))) throw notFound('Stay');
 
     const lines = dto.lines.map((line) => {

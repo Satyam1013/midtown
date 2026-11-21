@@ -257,6 +257,7 @@ Front-end work that remains is listed in [FRONTEND_CHANGES.md](FRONTEND_CHANGES.
 | Field | Type | Details |
 |---|---|---|
 | number | Number | required |
+| businessDate | String | YYYY-MM-DD; the open business day when placed, else the calendar date (`migrate:kot-dates` fills older KOTs); indexed for range reports |
 | stayId | ObjectId | ref Stay |
 | tableLabel | String |  |
 | items | Array (embedded) | required |
@@ -469,7 +470,7 @@ Front-end work that remains is listed in [FRONTEND_CHANGES.md](FRONTEND_CHANGES.
 | phone | String | required |
 | email | String |  |
 | passwordHash | String | required; hidden from API |
-| role | String | required; enum: OWNER, MANAGER, STAFF, KITCHEN |
+| role | String | required; enum: ADMIN, MANAGER, STAFF, KITCHEN (legacy OWNER is read as ADMIN until `npm run migrate:roles`) |
 | active | Boolean |  |
 | tokenVersion | Number | hidden from API |
 | createdAt | Date |  |

@@ -15,7 +15,7 @@ beforeAll(async () => {
     ['605', 'AC Executive', '3000.00', '3600.00'],
   ];
   for (const [number, roomType, singleRate, doubleRate] of plan) {
-    const res = await ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.MANAGER))
+    const res = await ctx.api().post(`${V1}/rooms`).set(bearer(ctx.token.ADMIN))
       .send({ number, floor: 6, category: 'AC', roomType, singleRate, doubleRate, features: ['AC', 'TV', 'Wi-Fi'], description: 'Corner room' })
       .expect(201);
     rooms[number] = res.body.data.id;
@@ -49,10 +49,10 @@ describe('Maintenance', () => {
     expect(ci.body.code).toBe('ROOM_NOT_VACANT');
     const stay = await checkIn('602', '9700060001');
     expect((await ctx.api().post(`${V1}/stays/${stay.id}/shift`).set(staff()).send({ toRoomId: rooms['601'], guests: 1, businessDate: ctx.today, time: '10:00' }).expect(409)).body.code).toBe('ROOM_NOT_VACANT');
-    const typeId = after.id;
+    // It can't be booked while under repair (until the expected back date).
     const booking = await ctx.api().post(`${V1}/bookings`).set(staff())
-      .send({ source: 'Walk-in', guestName: 'Group', phone: '9700060009', roomTypeId: typeId, rooms: after.totalRooms + 1, pax: after.totalRooms + 1, arrivalDate: ctx.today, departureDate: '2027-01-02', amount: '1000' });
-    expect([booking.status, booking.body.code]).toEqual([409, 'NO_ROOMS_AVAILABLE']);
+      .send({ source: 'Walk-in', guestName: 'Group', phone: '9700060009', roomId: rooms['601'], pax: 1, arrivalDate: ctx.today, departureDate: '2026-12-02', amount: '1000' });
+    expect([booking.status, booking.body.code]).toEqual([409, 'ROOM_NOT_AVAILABLE']);
 
     // A room with a guest can't go to maintenance.
     expect((await ctx.api().patch(`${V1}/rooms/${rooms['602']}/status`).set(staff()).send({ status: 'MAINTENANCE' }).expect(409)).body.code).toBe('ROOM_OCCUPIED');
@@ -72,14 +72,14 @@ describe('Room edit', () => {
   it('editing prices leaves a running stay unchanged; features are validated; number locked once used', async () => {
     const stay = await checkIn('603', '9700060002', 2); // 2500
     const before = (await ctx.model('FolioLine').find({ stayId: stay.id, source: 'TARIFF' }).lean()).map((l: any) => l.amount.toString());
-    await ctx.api().patch(`${V1}/rooms/${rooms['603']}`).set(mgr()).send({ features: ['Jacuzzi'] }).expect(400);
-    const res = await ctx.api().patch(`${V1}/rooms/${rooms['603']}`).set(mgr())
+    await ctx.api().patch(`${V1}/rooms/${rooms['603']}`).set(bearer(ctx.token.ADMIN)).send({ features: ['Jacuzzi'] }).expect(400);
+    const res = await ctx.api().patch(`${V1}/rooms/${rooms['603']}`).set(bearer(ctx.token.ADMIN))
       .send({ singleRate: '2200.00', doubleRate: '2800.00', floor: 7, features: ['AC', 'Balcony'], description: 'Sea-facing' }).expect(200);
     expect(res.body.data).toMatchObject({ singleRate: 2200, doubleRate: 2800, rate: 2200, floor: 7, features: ['AC', 'Balcony'], description: 'Sea-facing' });
     const row = await roomRow('603');
     expect(row.currentStay).toMatchObject({ rate: 2500, guests: 2 });
     expect((await ctx.model('FolioLine').find({ stayId: stay.id, source: 'TARIFF' }).lean()).map((l: any) => l.amount.toString())).toEqual(before);
-    expect((await ctx.api().patch(`${V1}/rooms/${rooms['603']}`).set(mgr()).send({ number: '699' }).expect(409)).body.code).toBe('ROOM_HAS_STAYS');
+    expect((await ctx.api().patch(`${V1}/rooms/${rooms['603']}`).set(bearer(ctx.token.ADMIN)).send({ number: '699' }).expect(409)).body.code).toBe('ROOM_HAS_STAYS');
     expect(await ctx.model('AuditLog').countDocuments({ action: 'ROOM_UPDATE', 'details.priceChanged': true })).toBe(1);
     await ctx.api().post(`${V1}/stays/${stay.id}/checkout`).set(staff()).send({}).expect(200);
     await vacate('603');

@@ -50,8 +50,8 @@ Guests can send requests, but no staff screen shows them.
 - `PATCH /service-requests/:id` with `{ "status": "IN_PROGRESS" }` or `"DONE"`.
 - A `key` of `checkout` is a guest's check-out request.
 
-### 8. Manager app: guest feedback (OWNER and MANAGER)
-`GET /feedback` returns `[{ stayId, roomNumber, guestName, rating, text, createdAt }]`. STAFF gets `403`, so show this only to OWNER and MANAGER.
+### 8. Manager app: guest feedback (ADMIN and MANAGER)
+`GET /feedback` returns `[{ stayId, roomNumber, guestName, rating, text, createdAt }]`. STAFF gets `403`, so show this only to ADMIN and MANAGER.
 
 ### 9. Manager app: optional owner tools
 - User management: `GET /users`, `POST /users`, `PATCH /users/:id`.
@@ -84,7 +84,7 @@ All additive: existing calls keep working.
 **Rooms**
 - `GET /rooms` now returns `category` (`AC` / `NON_AC`, or `null` on older rooms), `singleRate`, `doubleRate` (`rate` = `singleRate`) and `roomType.category`.
 - `POST /rooms`: `{ number, floor, category, roomType: "AC Deluxe", singleRate, doubleRate }`. Both rates are required with a category. Errors: `TYPE_CATEGORY_MISMATCH`, `RATES_REQUIRED`. The old body still works.
-- `PATCH /rooms/:id` (OWNER, MANAGER): any of `category`, `roomType` or `roomTypeId`, `singleRate`, `doubleRate`. Stays in progress keep their rate.
+- `PATCH /rooms/:id` (ADMIN): any of `category`, `roomType` or `roomTypeId`, `singleRate`, `doubleRate`. Stays in progress keep their rate.
 - Types: `Non AC Standard`, `Non AC New Standard` (NON_AC); `AC Standard`, `AC Deluxe`, `AC Executive` (AC). The four original types stay, so existing rooms need moving to the new types.
 
 **Stays**
@@ -109,9 +109,9 @@ All additive: existing calls keep working.
 
 **Business day**
 - `GET /business-day/current` returns `{ status: OPEN|CLOSED|NONE, businessDate, openedAt, openedByName, openingBalance, lastClosingBalance, lastClosedDate, suggestedNextDate }`. Show this in the header in place of the "Today" working-date picker.
-- `POST /business-day/start` takes `{ businessDate, openingBalance, time, note }`. `note` is required when the opening balance differs from `lastClosingBalance`. Errors: `409 DAY_ALREADY_OPEN`, `409 DAY_ALREADY_CLOSED`, `400 NOTE_REQUIRED`. STAFF, MANAGER and OWNER can start.
-- `POST /business-day/close` takes `{ businessDate, countedCash, note, time }`. `note` is required when there's a shortage or excess (`400 NOTE_REQUIRED`). OWNER and MANAGER only.
-- `POST /business-day/reopen` takes `{ businessDate, note }`. OWNER only.
+- `POST /business-day/start` takes `{ businessDate, openingBalance, time, note }`. `note` is required when the opening balance differs from `lastClosingBalance`. Errors: `409 DAY_ALREADY_OPEN`, `409 DAY_ALREADY_CLOSED`, `400 NOTE_REQUIRED`. STAFF, MANAGER and ADMIN can start.
+- `POST /business-day/close` takes `{ businessDate, countedCash, note, time }`. `note` is required when there's a shortage or excess (`400 NOTE_REQUIRED`). ADMIN and MANAGER only.
+- `POST /business-day/reopen` takes `{ businessDate, note }`. ADMIN only.
 - `GET /daybook?date=` adds `status, openedAt, openedByName, closedAt, closedByName, expectedCash, countedCash, shortage, closeNote`.
 - `PATCH /daybook/opening` works only while that day is open and takes an optional `note`.
 
@@ -127,7 +127,7 @@ All additive: existing calls keep working.
 - `GET /entries?date=` adds `source` and `shortfall`. Only `MANUAL` entries can be edited or deleted; others return `400 ENTRY_NOT_EDITABLE` naming their origin, so hide the edit button for them.
 - `GET /expenses?date=` now includes `time`.
 - `GET /expenses/summary?date=` returns `{ total, count, byHead[] }`.
-- `GET /daybook/shortages?from=&to=` returns `{ days[], entries[] }` (OWNER, MANAGER).
+- `GET /daybook/shortages?from=&to=` returns `{ days[], entries[] }` (ADMIN, MANAGER).
 
 ## Customers, ID documents, adding a guest (manager app)
 
@@ -142,7 +142,7 @@ All additive: existing calls keep working.
 **Documents**
 - Every document comes back as `{ id, type, numberLast4, fileName, mimeType, size, fileUrl, fileUrlExpiresIn, createdAt }`. The full ID number is never returned.
 - `fileUrl` is a path such as `/api/v1/files/customer-documents/…?exp=…&u=…&sig=…`. Put the API origin in front and use it directly in `<img>` or a new tab; it needs no token. It expires after 5 minutes, so refetch the customer for a fresh link.
-- `DELETE /customers/:id/documents/:docId` is OWNER and MANAGER only.
+- `DELETE /customers/:id/documents/:docId` is ADMIN and MANAGER only.
 
 **Customers screen**
 - `GET /customers?search=&filter=repeat|nodoc|all&limit=&cursor=` returns `[{ id, name, phone, email, visits, totalSpent, lastVisitAt, hasDocument, documentType }]`, newest visit first. Pass `meta.nextCursor` as `cursor` for the next page.
@@ -151,7 +151,7 @@ All additive: existing calls keep working.
   - `stays[]`: `{ id, role: MAIN|ADDED, roomNumber, roomType, checkInDate, checkOutDate, nights, guests, total, paid, balance, status }`
   - `payments[]`
 - `PATCH /customers/:id` edits `{ name, phone, email, notes }`. A phone belonging to another customer returns `409 CUSTOMER_PHONE_EXISTS` with `existingCustomerId`; offer a merge.
-- `POST /customers/:id/merge` takes `{ intoCustomerId }` (OWNER, MANAGER) and moves stays and documents into the other customer.
+- `POST /customers/:id/merge` takes `{ intoCustomerId }` (ADMIN, MANAGER) and moves stays and documents into the other customer.
 
 **Add a guest to a stay**
 - `POST /stays/:id/guests` takes `{ name, phone, guests (new total), businessDate, time }`. Any `rate` sent is ignored.
@@ -169,7 +169,7 @@ All additive: existing calls keep working.
 - `GET /rooms` returns `maintenanceReason` and `maintenanceUntil`.
 - A maintenance room can't be checked into or shifted to (`409 ROOM_NOT_VACANT`), and isn't counted for bookings (`409 NO_ROOMS_AVAILABLE`).
 - Room types gain `totalRooms` (rooms that can be sold) and `availableRooms` (VACANT or DIRTY now). This includes the guest app's `GET /public/room-types`.
-- `GET /rooms/maintenance-history?roomId=` (OWNER, MANAGER) lists past and current maintenance periods.
+- `GET /rooms/maintenance-history?roomId=` (ADMIN, MANAGER) lists past and current maintenance periods.
 
 **Room edit**
 - `POST /rooms` and `PATCH /rooms/:id` accept `features` (from the fixed list in `ROOM_FEATURES`: "AC", "TV", "Hot water / geyser", "Wi-Fi", "Attached bathroom", "Balcony", "Double bed", "Twin beds", "Extra bed available", "Fridge", "Sofa / seating", "Work desk", "Power backup", "Window view") and `description`.
@@ -195,7 +195,7 @@ All additive: existing calls keep working.
 
 **Bill prints**
 - `POST /stays/:id/bill-prints` takes `{ type: MANUAL|GENERATED, which: combined|stay|food|other|separate, amounts: { stay, food, other }, actualAmounts: { stay, food, other } }` and returns `201`. It records the print and changes nothing else.
-- `GET /stays/:id/bill-prints` (OWNER, MANAGER) lists them.
+- `GET /stays/:id/bill-prints` (ADMIN, MANAGER) lists them.
 - The report `GET /reports/manual-bills?date=` lists manual bills printed that day.
 
 ## Guest app: one customer, many bookings
@@ -237,9 +237,9 @@ All additive: existing calls keep working.
 - A `url` is a path (`/api/v1/files/images/…`): put the API origin in front. It's public, needs no token, and doesn't expire.
 
 **Menu, stock, staff**
-- `POST /menu` (OWNER, MANAGER) takes `{ name, description, price, category, isVeg, available }`. A name already in that category, ignoring case, returns `409 MENU_ITEM_EXISTS`.
+- `POST /menu` (ADMIN, MANAGER) takes `{ name, description, price, category, isVeg, available }`. A name already in that category, ignoring case, returns `409 MENU_ITEM_EXISTS`.
 - `POST /stock` takes `{ item, category, unit, qty, minQty, rate }`. An opening quantity is recorded as an "Opening stock" movement. A duplicate name, ignoring case, returns `409 STOCK_ITEM_EXISTS`.
-- `POST /staff` (OWNER, MANAGER) takes `{ name, role, shift, phone, salary }`. `GET /staff` includes `phone`.
+- `POST /staff` (ADMIN, MANAGER) takes `{ name, role, shift, phone, salary }`. `GET /staff` includes `phone`.
 
 **Customer credit (udhaar)**
 - `POST /customers/:id/credit` takes one of:
@@ -247,7 +247,15 @@ All additive: existing calls keep working.
   - `{ kind: "PAYMENT", amount, mode, narration, time }`: needs an open day. It posts a receipt (`source: CUSTOMER_CREDIT`) on the open day.
 - It returns `{ entry, creditBalance, receipt }`.
 - Errors: `409 CREDIT_EXCEEDED` (more than is owed), `400 MODE_REQUIRED`.
-- `GET /customers` items include `creditBalance`. `GET /customers?hasCredit=true` lists only customers who owe money.
+- `GET /customers` items include `creditBalance` and `dueAmount`. `GET /customers?hasCredit=true` (or `hasDue=true`) lists only customers who owe money.
+- **`dueAmount`** is what the customer owes, as a 2-decimal string (`"2600.00"`, `"0.00"` when nothing is due).
+  - It equals credit (udhaar) charges minus payments against them. A charge is given with `POST /customers/:id/credit` or by moving a checkout's unpaid balance to credit.
+  - `GET /customers/:id` returns the same field with the same value.
+  - The figure is the customer's `creditBalance`, which is updated in the same transaction as every credit ledger entry. The list reads it straight from the customer record, so there's no per-customer query.
+  - It never goes negative, because a payment above what's owed is refused (`409 CREDIT_EXCEEDED`). That's also why there is no `advanceBalance`.
+  - It doesn't include the open folio of a stay in progress, because that is the stay's bill (`GET /stays/:id/bill`), not credit.
+- **`sort=due_desc`:** lists the customers who owe most first. `meta.nextCursor` follows that order. The default `sort=recent` is by last visit.
+- **Merge:** merging customers also moves the credit ledger and adds the balances together.
 - `GET /customers/:id` adds `creditBalance` and `creditEntries[]`, newest first.
 - `POST /stays/:id/checkout` takes `creditAmount` to move unpaid money onto the customer's credit. The bill shows it under payment mode `CREDIT`. More than is unpaid returns `400 CREDIT_TOO_HIGH`.
 
@@ -296,8 +304,8 @@ All additive: existing calls keep working.
 **Room types** (in `GET /public/room-types`, `GET /guest/room-types` and `GET /room-types`)
 - New fields `singleRate`, `doubleRate`, `additionalGuestRate`, all per night with GST excluded. They're numbers, and `tariff` equals `singleRate`.
 - Types not priced yet return `null` rates, and booking them returns `409 NO_PRICE`.
-- `POST /room-types` (OWNER) takes `{ name, category, sleeps (1-4), singleRate, doubleRate, additionalGuestRate, beds, size, blurb, perks, sortOrder }`.
-- `PATCH /room-types/:id` (OWNER) takes any of the same fields. `tariff` is still accepted as the older name for `singleRate`.
+- `POST /room-types` (ADMIN) takes `{ name, category, sleeps (1-4), singleRate, doubleRate, additionalGuestRate, beds, size, blurb, perks, sortOrder }`.
+- `PATCH /room-types/:id` (ADMIN) takes any of the same fields. `tariff` is still accepted as the older name for `singleRate`.
 - Rules: `doubleRate` must be at least `singleRate` (`400 INVALID_RATES`), and `additionalGuestRate` must be 0 or more.
 
 **Pricing:** every booking is priced on the server.
@@ -371,16 +379,381 @@ All additive: existing calls keep working.
 
 **Quote:** `POST /public/bookings/quote` and `POST /guest/bookings/quote` take `{ rooms: [{ roomTypeId, guests }], arrivalDate, departureDate }`. They return `{ nights, rooms: [{ roomTypeId, roomType, guests, ratePerNight }], amount }`; `perRoom` is the same list under its older name.
 
+## Roles: ADMIN and MANAGER (manager app)
+
+The owner account is now `ADMIN` (it was `OWNER`). Hiding controls in the app is not enough on its own; the API enforces every rule below. The role comes only from the verified token and the user record, never from a request body.
+
+**Login:** `POST /auth/staff/login` returns `{ accessToken, refreshToken, user: { id, name, phone, email, role } }`, and the access token carries `role`. A token without a role, or with a role the user no longer has, gets `401 INVALID_TOKEN`; sign in again.
+
+**ADMIN only.** Anyone else gets `403 { code: "FORBIDDEN", message: "Admin access required" }`:
+- `POST /rooms`, `PATCH /rooms/:id` (prices, category and type, floor, features, description, beds, size, sleeps)
+- `POST /rooms/:id/images`, `DELETE /rooms/:id/images/:imageId`
+- `POST /room-types`, `PATCH /room-types/:id`
+- `DELETE /rooms/:id` (new)
+
+**Still open to MANAGER:** reading rooms, `PATCH /rooms/:id/status` and `POST /rooms/mark-all-clean`.
+
+**`DELETE /rooms/:id`:**
+- Returns `409 ROOM_IN_USE` while a guest is in the room. Check out or shift the guest first.
+- A room with history (stays, register lines or maintenance) is soft-deleted. It drops out of `GET /rooms` and can't be checked into, but old bills and registers still show its number. The number can't be reused.
+- A room with no history is removed for good.
+- Returns `{ id, number, deleted: true, soft }`. Every delete is written to the audit log with who, when and which room. Sockets get `room.deleted` with `{ roomId, number }`.
+
+**Day book and cash: MANAGER and STAFF see only the open business day.** This covers `GET /daybook`, `/daybook/register`, `/daybook/shortages`, `/entries`, `/expenses`, `/expenses/summary`, `/invoices`, `/online-orders` and `/reports/:key`.
+- A `date`, `from` or `to` other than the open day returns `403 PAST_DATE_RESTRICTED`.
+- With no date, the open day is used. Lists that used to cover every date (`/expenses`, `/expenses?status=DUE`, `/invoices`, `/online-orders`) show the open day only.
+- With no day open, these answer empty data: `null` for `/daybook`, `[]` for the register and entries, an empty page for paged lists, and `rows: []` for reports.
+- Changing another day returns `403 PAST_DATE_RESTRICTED`. This covers `PATCH` and `DELETE /entries/:id` for an entry from another day, `PATCH /daybook/opening` for another date, and `POST /invoices` dated another day.
+- ADMIN can read any date. A closed day still can't be edited by anyone (`409 DAY_CLOSED`), so an ADMIN reopens it first.
+
+## Laundry (manager app)
+
+Laundry routes are for ADMIN and MANAGER, except `GET /laundry/prices`, which the desk can read.
+
+### `POST /laundry/orders`
+
+- **Body:** `{ source, requestId?, stayId?, roomId?, guestName?, phone?, express?, expectedDate?, billTo, mode?, items: [{ name, service, qty, price }], amount?, note?, time? }`.
+  - `source` is `ROOM_REQUEST`, `STAFF` or `WALK_IN`.
+  - `service` is `WASH`, `IRON`, `WASH_IRON` or `DRY_CLEAN`.
+  - `businessDate` is ignored: the order is taken on the open day.
+- **Rules:**
+  - `ROOM_REQUEST` needs `requestId`, and the stay comes from the request.
+  - `STAFF` needs an in-house `stayId` (`400 STAY_REQUIRED` / `STAY_NOT_IN_HOUSE`).
+  - `WALK_IN` needs `guestName` (`400 GUEST_NAME_REQUIRED`) and must be `PAY_NOW`.
+  - `items` can't be empty.
+- **Money, worked out on the server:**
+  - `subtotal` = Σ qty × price.
+  - `expressCharge` = subtotal × express % (50 by default; see prices below).
+  - `amount` = subtotal + expressCharge.
+  - GST is added like any other service (18% by default), giving `cgst`, `sgst` and `total`.
+  - If you send `amount`, it must equal the server's figure, otherwise `400 AMOUNT_MISMATCH`.
+  - `total` is what's charged at delivery.
+- **From a request:**
+  - The order is linked to the request, and the request moves to `IN_PROGRESS` and gets `laundryOrderId`.
+  - A second live order for the same request returns `409 REQUEST_HAS_ORDER`.
+  - The request must be a laundry one and still open.
+- **On creation:** the status starts at `REQUESTED`, `number` is `LND-0001` and so on, and no money is posted.
+
+### `GET /laundry/orders?status=&date=&stayId=&page=&limit=`
+
+- **Response:** `{ data, meta }`, newest first. Each order has its items and `roomNumber`.
+- **Which orders:**
+  - ADMIN sees every order, or one business day with `date`.
+  - MANAGER sees the open day plus every order not yet `DELIVERED` or `CANCELLED`, from any day. Another `date` returns `403 PAST_DATE_RESTRICTED`.
+
+### `PATCH /laundry/orders/:id` with `{ status?, mode?, time?, items?, express?, amount?, expectedDate?, billTo?, note? }`
+
+- **Status moves:** `REQUESTED → PICKED_UP → IN_PROCESS → READY → DELIVERED`, and steps may be skipped.
+  - Going back returns `409 INVALID_STATUS_CHANGE`.
+  - Any open order can be `CANCELLED`, but a `READY` one needs ADMIN (`403`).
+  - `DELIVERED` and `CANCELLED` are final: `409 ORDER_CLOSED`.
+- **Timestamps:** `pickedUpAt`, `readyAt`, `deliveredAt` and `cancelledAt` are set as the order moves.
+- **Edits:** allowed only while the order is open. They reprice it, and an edit sent together with `DELIVERED` is applied first.
+- **On `DELIVERED`:** the money is posted in the same transaction, exactly once.
+  - `ROOM`: a "Laundry LND-0001" charge goes on the guest's folio, in the OTHER section with its GST. If the guest has checked out, the call returns `409 STAY_CLOSED`; switch to `billTo: PAY_NOW`.
+  - `PAY_NOW`: a `CREDIT` day-book line (`type: "Laundry"`, `source: "LAUNDRY"`, narration "Laundry LND-0001") is posted on the open day, with `mode` from the order or the PATCH body (`400 MODE_REQUIRED` without one). With no day open, the call returns `409 DAY_NOT_OPEN`.
+  - The linked request becomes `DONE` with the remark "Laundry delivered".
+- **On `CANCELLED`:** nothing is posted. The linked request becomes `REJECTED` with the remark "Cancelled", and can be ordered again.
+- **Picked up or moved on:** the linked request is `IN_PROGRESS`.
+- **Audit:** every change is logged (`LAUNDRY_ORDER`).
+
+### Prices
+
+- **`GET /laundry/prices`:** returns `{ expressPct, items: [{ name, service, price }], custom }`. It's a built-in list (`custom: false`) until an ADMIN saves one.
+- **`PUT /laundry/prices`:** ADMIN only. Body `{ expressPct, items: [{ name, service, price }] }`. `expressPct` is also what new orders use, and the `LAUNDRY_EXPRESS_PCT` env var sets the default.
+
+### Service requests and reports
+
+- **`GET /service-requests`:** laundry requests come with `roomNumber`, `guestName`, `note`, `createdAt` and `laundryOrderId` (`null` while no live order exists).
+- **`GET /reports/summary`:**
+  - Laundry paid at delivery is in `totalSales`, because it's a day-book credit.
+  - Laundry billed to the room is counted when the guest pays at checkout.
+  - The new `totalLaundry` is delivered orders' `total` by delivery day. It includes room-billed orders and never cancelled ones.
+- **`GET /reports/entries`:** has `category=LAUNDRY`. Food totals are unaffected.
+- **Deleting a stay** cancels its undelivered laundry orders.
+
+## Withdraw entries (day book)
+
+- **`POST /entries` with `type: "Withdraw"`:** the type is matched without case and stored and returned as `"Withdraw"`, with `source: "WITHDRAW"`.
+  - `dc` is always `DEBIT`. It may be left out; `CREDIT` returns `400 WITHDRAW_IS_DEBIT`.
+  - `mode` defaults to `BANK`; `CASH`, `UPI` and `CARD` also work.
+  - `amount` must be above 0 (`400 AMOUNT_REQUIRED`).
+  - `roomId`, `phone` and `vehicle` are optional. `guestName` is the person who withdrew.
+- **Other entries:** `mode` and `dc` are still required (`400 MODE_REQUIRED` / `DC_REQUIRED`).
+- **Rules:** the same as manual entries.
+  - The duplicate check applies (`409 DUPLICATE_ENTRY`).
+  - Withdrawals are posted on the open day only. Editing or deleting on a closed day returns `409 DAY_CLOSED`, and non-admins get `403` for another day.
+  - Edits can't make it a credit.
+  - Every create, edit and delete is audit-logged (`WITHDRAW`).
+- **Day book:**
+  - A withdrawal is a debit, so it lowers `closingBalance` and its mode's net.
+  - `GET /daybook` adds `totalWithdraw`, the day's withdrawals, which are already inside `debits`.
+  - `GET /daybook/register` shows each withdrawal as a `DEBIT` line with `source: "WITHDRAW"`.
+- **Reports:**
+  - `GET /reports/summary` doesn't count withdrawals as sales or expenses. It adds `totalWithdraw` for the range.
+  - `GET /reports/entries` has a new `category=WITHDRAW`. Withdrawals are included under "All" and not under `EXPENSE` or `OTHER`.
+
+## Bookings hold a room; PREBOOKED rooms (manager app)
+
+### `POST /bookings` and `PATCH /bookings/:id`
+
+- **`roomId`:** required on `POST /bookings` (`400 VALIDATION_ERROR` without it). The booking is for that one room, so `rooms` is 1. Send `pax` for the guests in it.
+  - `roomTypeId` is optional, and must be the room's type when sent.
+  - Guest-app and public booking requests still have no room until the desk assigns one, because they go through their own endpoints.
+- **Availability rules:** a booking for `[arrivalDate, departureDate)` is refused with `409 ROOM_NOT_AVAILABLE` when:
+  - the room is of another type;
+  - it sleeps fewer than `pax` (its `sleeps`, default 4);
+  - it is `OOO`;
+  - it is under `MAINTENANCE` with no back date, or a back date after the arrival;
+  - its current guest leaves after the arrival;
+  - another `CONFIRMED` or `ARRIVING` booking of the room overlaps the dates.
+- **How dates compare:** a departure and an arrival on the same day don't clash.
+- **Transaction:** the check runs in one transaction that also writes to the room, so two desks booking the same room at once can't both succeed.
+- **Moving a booking:** `PATCH { roomId }` moves the booking to another room, releasing the old one and holding the new one. The booking takes the new room's type and is repriced.
+  - Once a room of the booking is checked in, the room is locked like the arrival date (`409 BOOKING_LOCKED`).
+  - Changing the dates, guests or status back to `CONFIRMED`/`ARRIVING` checks the rules again.
+- **Responses:** `GET /bookings` and the `PATCH` response include `roomId` and `roomNumber`.
+
+### Room status `PREBOOKED` (set by the server only)
+
+- **When it's set:** on the arrival day (the open business day), a `VACANT` room held by a `CONFIRMED` or `ARRIVING` booking becomes `PREBOOKED`.
+  - This happens when the booking is saved, when the business day starts, and when the room is cleaned (`mark-all-clean`, or a manual status change back to `VACANT`).
+  - An `OCCUPIED` room stays `OCCUPIED` and becomes `PREBOOKED` once checked out and cleaned.
+  - Rooms booked for later dates stay `VACANT`.
+- **Releasing:** cancelling, `NO_SHOW` (by hand or at day close), deleting the booking, or moving it to another room turns a `PREBOOKED` room back to `VACANT`. Check-in makes it `OCCUPIED`.
+- **Walk-ins and shifts:**
+  - A `PREBOOKED` room can't take a walk-in (`409 ROOM_NOT_AVAILABLE`) or a room shift (`409 ROOM_NOT_VACANT`).
+  - A walk-in or shift whose nights overlap any future hold of the room is refused too (`409 ROOM_NOT_AVAILABLE`). Leaving on the hold's arrival day is fine.
+- **Counts:** `PREBOOKED` rooms count as rooms of their type, but not as free rooms or occupied ones.
+
+### `POST /stays` with `bookingId`
+
+- **Room:** `roomId` may be left out, and the booking's room is used.
+- **Booking:** the stay is linked to the booking, which becomes `CHECKED_IN`.
+- **A different room:** if you send a `roomId` other than the booking's, the guest goes into that room (it must be `VACANT` and free for those nights). The booking moves to it, and its old room is released.
+
+### `GET /rooms`
+
+- **`prebooking`:** each room has `prebooking: { id, guestName, arrivalDate, departureDate, pax, status } | null`. This is the next `CONFIRMED` or `ARRIVING` booking holding the room that hasn't departed.
+
+### `GET /rooms/available?from=&to=&roomTypeId=&guests=`
+
+- **What it returns:** the rooms a booking for `[from, to)` could take, under the same rules as above.
+- **Shape:** `[{ id, number, floor, roomTypeId, category, status, sleeps }]`.
+
+## Booking no-shows (manager app)
+
+- **New status:** `NO_SHOW`. It also appears in the guest app's booking list.
+- **Automatic rule:** when a business day is closed, every `CONFIRMED` or `ARRIVING` booking arriving on or before that day becomes `NO_SHOW`. Each change gets its own audit entry (`BOOKING_NO_SHOW`) and a `booking.updated` socket event.
+  - It runs in the same transaction as the close.
+  - A booking with a checked-in room is never touched, and neither are `CHECKED_IN`, `CANCELLED` or `REQUESTED` bookings.
+  - There's no separate nightly job: closing the day is the trigger.
+- **Late arrival:** `POST /stays` with the `bookingId` still works for a `NO_SHOW` booking, and the booking becomes `CHECKED_IN`.
+- **Reviving:** to bring a `NO_SHOW` booking back to `CONFIRMED` or `ARRIVING`, `PATCH /bookings/:id` must include the new `arrivalDate` (and the `departureDate` if needed). Without it the call returns `400 ARRIVAL_REQUIRED`. Staff can also set `NO_SHOW` by hand.
+- **`GET /bookings` filters:**
+  - `status` and `excludeStatus` each take one status or several, comma-separated, e.g. `?excludeStatus=CHECKED_IN,CANCELLED`.
+  - `from` and `to` filter by arrival date, inclusive. `from` after `to` returns `400 INVALID_RANGE`.
+  - `date` still means "arriving on this date".
+  - The list is now sorted by arrival, soonest first.
+- **Reports:** the summary's sales come from money actually received and its guests from actual check-ins, so a `NO_SHOW` booking is never counted. The "Bookings" report lists it with its status.
+
+## KOTs: list, status and cancel (Restaurant & Orders screen)
+
+### `GET /kots` (every staff role; non-admins get the open day only)
+
+- **Filters:** `?date=&status=&stayId=&page=&limit=`. The response is `{ data: [...], meta: { page, limit, total } }`, newest first.
+- **Date:** one business day, by default the open day (else today).
+  - MANAGER asking for another date gets `403 PAST_DATE_RESTRICTED`.
+  - An ADMIN filtering by `stayId` without a `date` gets every day.
+- **Each row:**
+  - `id`, `number` (still a number, e.g. `42`) and `displayNumber` (`"K-0042"`)
+  - `stayId`, `roomNumber`, `guestName`, `tableLabel`, `billTo`, `waiterId`, `waiterName`, `status`
+  - `taxable`, `cgst`, `sgst`, `total`, `businessDate`, `createdAt`, `note`
+  - `items: [{ name, qty, price, note, menuItemId }]`. Items carry their name and price as they were when ordered.
+
+### `PATCH /kots/:id` with `{ status }`
+
+`PATCH /kots/:id/status` is the older path and still works.
+
+- **Statuses:** `PLACED`, `PREPARING`, `READY`, `ON_THE_WAY`, `SERVED`, `CANCELLED`.
+  - A new KOT starts as `PLACED`; show it as "Preparing" if you only use four steps.
+  - `ON_THE_WAY` is used by the kitchen and guest apps for room service.
+- **Moves:** forward only, and steps may be skipped. Going back returns `409 INVALID_KOT_STATUS`.
+- **Cancelling:** allowed from any status before `SERVED`. The kitchen (`KITCHEN` role) can't cancel (`403`).
+- **Final states:** a `SERVED` or `CANCELLED` KOT can't change: `409 KOT_CLOSED`.
+- **Audit:** every change is logged (`KOT_STATUS`) with who, when, the old and new status, and any folio charge removed.
+
+**On `CANCELLED`:**
+- **ROOM bill:** the KOT's charge is removed from the guest's folio. If the guest has already checked out, the call returns `409 KOT_BILLED`, because that bill is closed.
+- **PAY_NOW, already paid:** `409 KOT_SETTLED`. Refund it instead.
+- **PAY_NOW, not paid:** the KOT is cancelled, and `POST /bills/settle` refuses it afterwards with `409 KOT_CANCELLED`.
+- **Reports:** cancelled KOTs are left out of `totalFoodOrders` and `foodSales` in `GET /reports/summary`.
+
+### Print Bill
+
+No endpoint is needed while CGST and SGST are typed on the client and only printed. If the bill should be stored later, the plan is `POST /kots/:id/bill`:
+- It would take `{ cgstAmount, sgstAmount }`, or better, let the server work out GST as it already does (`taxable`, `cgst` and `sgst` are on every KOT).
+- It would give a bill number from the same per-year counter as room bills.
+- It would keep the bill for audit.
+
+## Online orders: no commission, status and cancel (manager app)
+
+- **`POST /online-orders`:** takes `{ businessDate, platform, orderId, items, amount }`.
+  - `amount` is the order value and the only money field. It is posted to the day book as a `BANK` receipt on the open day.
+  - `commissionPct` is accepted from older apps and ignored.
+  - In responses `payout` and `commissionPct` are `null`.
+  - `businessDate` is ignored: the order goes to the open day, like every posting.
+- **`GET /online-orders`:** each order has `id, platform, orderId, items, amount, status, time, businessDate`. `status` is one of `PREPARING`, `PICKED_UP`, `DELIVERED` or `CANCELLED`.
+- **`PATCH /online-orders/:id`:** body `{ status }`. Same roles as creating an order, so MANAGER can use it.
+  - Allowed moves: `PREPARING → PICKED_UP → DELIVERED`, with steps allowed to be skipped. Going back returns `409 INVALID_STATUS_CHANGE`.
+  - `PREPARING` or `PICKED_UP` can move to `CANCELLED`.
+  - A `DELIVERED` or `CANCELLED` order can't change: `409 ORDER_CLOSED`.
+  - `DELIVERED` moves no money.
+  - Every change is audit-logged with who, when, and the old and new status.
+- **On `CANCELLED`:**
+  - A receipt on the open day is voided with its cash line.
+  - A receipt on an earlier, closed day is left as it is, and an opposite `BANK` line (`type: "Online order cancelled"`, linked by `reversalOf`) is posted on the open day. With no day open, the call returns `409 DAY_NOT_OPEN`.
+  - Cancelled orders are left out of `totalSales`, `foodSales` and `totalFoodOrders` in `GET /reports/summary`.
+- **"Online" report:** no longer has a "Net payout" column.
+
+## Expenses: salary advance, edit and delete (manager app)
+
+### Salary advance (`POST /expenses`)
+
+- **`staffId`:** optional on any expense, and required when `head` is `"Salary advance"` (the match ignores case).
+  - Without it the call returns `400 STAFF_REQUIRED`.
+  - An unknown staff member returns `400 STAFF_NOT_FOUND`.
+  - `onCredit: true` returns `400 ADVANCE_ON_CREDIT`, because an advance is paid now.
+- **Stored and returned:** `staffId` is saved on the expense and returned by `GET /expenses`. `vendor` is stored exactly as you send it.
+- **Advances per staff member:** `GET /staff/:id/advances` (ADMIN, MANAGER) returns `{ staffId, name, salary, total, advances: [{ id, businessDate, time, amount, mode, head, narration }] }`. Payroll can deduct `total`.
+- **Salary:** `GET /staff` already returns `salary` for every staff member.
+
+### `PATCH /expenses/:id` (ADMIN only; MANAGER gets `403`)
+
+- **Body:** any of `{ head, vendor, staffId, amount, narration, mode, dueDate }`.
+- **Response:** the updated expense, in the same shape as a row of `GET /expenses`. The audit log (`EXPENSE_UPDATE`) records the before and after values.
+- **Open day only:** a closed day returns `409 DAY_CLOSED`. Any other day that isn't open returns `409 DAY_NOT_OPEN`. To correct a closed day, the ADMIN reopens it with `POST /business-day/reopen` first.
+- **`onCredit`:** can't change, and a different value returns `400 ON_CREDIT_LOCKED`. Sending the same value is accepted.
+- **Paid-now expense:** the cash line's amount, mode and head are rewritten in the same transaction, so the day book moves by exactly the difference. A `dueDate` returns `400`.
+- **Credit expense:**
+  - `mode` returns `400 MODE_NOT_ALLOWED`.
+  - An `amount` below what's already been paid returns `409 EXPENSE_PAYMENTS_EXIST`.
+  - Otherwise `dueAmount` is recalculated. `dueDate: null` clears the due date.
+
+### `DELETE /expenses/:id` (ADMIN only)
+
+- **Success:** `204`. A repeated call returns `404`. Same open-day rule as PATCH (`409 DAY_CLOSED`).
+- **Soft delete:** the expense gets `deletedAt` and `deletedByUserId`. Its cash line is soft-deleted in the same transaction, so no orphan is left.
+- **Where it disappears:** `GET /expenses` (including `status=DUE` and payables), `/daybook`, `/daybook/register` and every report.
+- **Payments exist:** a credit expense with any payment made against it returns `409 EXPENSE_PAYMENTS_EXIST`. Those payments are day-book lines, possibly on other days, and aren't reversed automatically.
+- **Audit:** the audit log (`EXPENSE_DELETE`) keeps who deleted it, when, and the expense as it was.
+
+## Delete a stay created by mistake (manager app, Guest Management)
+
+### `DELETE /stays/:id` (ADMIN only; MANAGER gets `403 FORBIDDEN "Admin access required"`)
+
+- **Body:** optional `{ reason }`, which is kept in the audit log.
+- **Success:** `204`, no body. Calling it again returns `404`.
+- **Checked out:** a stay that has already checked out returns `409 STAY_CLOSED`.
+- **Settled bill:** returns `409 STAY_HAS_PAYMENTS` when a KOT of the stay was paid at the desk, or a service was paid for (pay now). Check the guest out and refund instead.
+
+Everything below happens in one transaction:
+- **Money taken for the stay:** this covers the advance at check-in, part payments and refunds.
+  - A line on the open day is voided together with its cash line, so the day book and cash go back to what they were.
+  - A line on an earlier day is left untouched, because closed days are never edited. An opposite line (`type: "Stay voided"`, linked by `reversalOf`) is posted on the open day instead. If no day is open, the call returns `409 DAY_NOT_OPEN`.
+- **Charges:** room charges and the rest of the folio are voided. These were never day-book money.
+- **Open items:** open service requests and unpaid KOTs of the stay are voided.
+- **Room:** goes back to `VACANT`.
+- **Booking:** the booked room is freed, and the booking goes back to `CONFIRMED` if no other room of it is checked in. A walk-in's own one-room booking is voided.
+- **Customer:** the customer's visit count goes down by one.
+- **The stay itself:** becomes `CANCELLED` and is soft-deleted (`deletedAt`, `deletedByUserId`, `voidReason`). It drops out of `GET /rooms` (`currentStay`), `GET /stays/in-house`, customer history and reports.
+- **Audit:** the audit log (`STAY_VOID`) records who, when, the stay, the room, the reason, and the lines voided or reversed.
+- **Sockets:** a `stay.voided` event goes out with `{ stayId, roomId }`.
+
+`GET /reports/summary` nets a reversal against the original payment, so `totalSales` doesn't count money that was given back.
+
+### `PATCH /stays/:id` (edit form)
+
+- **Accepted fields:** `guestName`, `phone`, `vehicle`, `guests`, `checkOut`, and an optional `payment: { kind: ADVANCE | PART_PAYMENT | REFUND, amount, mode, time, narration }`.
+- **Guests:** at least 1, up to what the room sleeps (`sleeps`, 4 by default). A higher number returns `400 TOO_MANY_GUESTS`.
+- **Repricing:** changing `guests` reprices the nights from today on. Changing `checkOut` changes the nights.
+- **Response:** `{ stay, entry }`, where `entry` is the payment line or `null`.
+
+## Edit and delete OTA bookings (manager app)
+
+### `PATCH /bookings/:id` (ADMIN, MANAGER)
+
+- **Body:** any of `{ source, ref, guestName, phone, roomTypeId, rooms, pax, arrivalDate, departureDate, amount, payment, status, note }`. A field you leave out stays as it is.
+- **Response:** the updated booking, in the same shape as a row of `GET /bookings`.
+- **Status:** one of `ARRIVING`, `CONFIRMED`, `CHECKED_IN`, `CANCELLED` or `NO_SHOW`.
+- **Validation errors:**
+  - `400 INVALID_DATES` unless departure is after arrival.
+  - `400 VALIDATION_ERROR` for `rooms` below 1 or above 10, or a negative `amount`.
+  - `409 BOOKING_EXISTS` when the `ref` is already used by another booking from the same source.
+- **Repricing:**
+  - Changing `roomTypeId`, `rooms` or `pax` reprices every room at today's tariff. `roomTypeId` moves every room to that type, and `pax` is split across the rooms.
+  - Changing only the dates keeps each room's booked rate and changes the number of nights.
+- **Amount:** only an OTA booking (MakeMyTrip, Booking.com, Goibibo, Agoda, Airbnb) takes `amount` from the client. Other bookings are priced by the server, the same as at create.
+- **Phone:** a new phone links the booking to that customer, except for guest-app bookings, which stay with the customer who made them.
+- **Locked fields:** once a room of the booking is checked in, changing `arrivalDate`, `rooms`, `roomTypeId` or `pax` returns `409 BOOKING_LOCKED`. Sending the same value as before is fine. Other fields, including departure, can still be edited.
+- **Audit:** every edit is audit-logged with the before and after values.
+
+### `DELETE /bookings/:id` (ADMIN only for now)
+
+- **Success:** `204`, no body.
+- **Not found:** `404` for an unknown or already-deleted booking.
+- **Already used:** `409 BOOKING_IN_USE` once a room of the booking is checked in. Use `PATCH { status: "CANCELLED" }` instead.
+- **Soft delete:** the booking gets `deletedAt` and drops out of `GET /bookings`. It stays in the database for reports and the audit trail.
+- **Reference:** its OTA `ref` can be used again.
+- **Audit:** the audit log records who deleted it, when, and which booking.
+- **Sockets:** `booking.updated` and `booking.deleted` events go to hotel staff.
+
+## Date-range reports (manager app)
+
+Both endpoints take `from` and `to` as `YYYY-MM-DD` business dates, both inclusive.
+- A missing end takes the value of the other one. With neither, the open business day is used.
+- Errors are `400`: `INVALID_DATE` for a date that doesn't exist, `INVALID_RANGE` when `from` is after `to`, and `RANGE_TOO_LONG` for more than 366 days. A wrongly formatted date gets `VALIDATION_ERROR`.
+- ADMIN and MANAGER can call them; STAFF gets `403`. ADMIN can use any range.
+- For MANAGER, `from` and `to` must both be the open day; anything else gets `403 PAST_DATE_RESTRICTED`. With no day open, MANAGER gets zeros and an empty list.
+- Money is returned as 2-decimal strings, as asked. This is unlike the rest of the API, which returns numbers.
+
+### `GET /reports/summary?from=&to=`
+
+The response is `{ totalSales, totalGuests, totalFoodOrders, totalExpenses, foodSales, totalWithdraw, totalLaundry }`. The fields are in `data`, and also repeated at the top level.
+
+| Field | Rule used |
+|---|---|
+| `totalSales` | Sum of `CREDIT` register lines (room, food, online orders, service charges, manual receipts, udhaar paid back) in the range. Refunds and all debits are left out. Udhaar never reaches the register until it is paid, so it is counted once, on the day it's paid. A checkout's shortfall isn't counted. |
+| `totalGuests` | Each stay counted once, on its check-in date, at the most guests it ever had. Adding a guest mid-stay doesn't count the stay twice. A room shift is the same stay. |
+| `totalFoodOrders` | Restaurant and room-service KOTs plus online orders whose status doesn't contain "cancel". KOTs can't be cancelled, only deleted, and deleted ones are left out. |
+| `totalExpenses` | Every expense by its date at its full amount, including ones on credit. Later payments of a credit expense aren't added again. |
+| `foodSales` | KOT totals (GST included) plus online order `amount`. Cancelled orders aren't counted. |
+
+### `GET /reports/entries?from=&to=&category=&page=1&limit=25`
+
+- `category` is one of the following. Leave it out for all rows.
+  - `ROOM`: check-in, checkout, stay payment, refund
+  - `FOOD`: restaurant, room service, online
+  - `EXPENSE`: expenses and expense payments
+  - `OTHER`: manual entries, service requests, udhaar paid back, and the rest
+- `limit` is 25 by default, at most 5000.
+- Rows are register lines plus expenses, newest first: by `businessDate` descending, then `time` descending. Paging happens in the database.
+- The response is as specified: `{ data: [...], total, page, limit, totals: { credit, debit } }`, plus the usual `meta`. `total` and `totals` cover the whole range and category.
+- Each row has `id, businessDate, time, roomNumber, guestName, type, mode, dc, amount, narration, source, category`.
+  - Expense rows have `source: "EXPENSE"`, the head as `type`, the vendor as `guestName`, and `onCredit`.
+  - A checkout paid by split payment shows one row per payment.
+- An expense bought on credit is listed but not counted in `totals.debit`, the same as in the day book. Its payments are the `EXPENSE_PAYMENT` rows, so counting both would add it twice. This is why `totals.debit` can be lower than `totalExpenses` in the summary.
+
 ## Behaviour to expect
 
 - **Duplicate rule on stay payments:** a second payment of the same type and amount for the same guest, room and date returns `409 DUPLICATE_ENTRY` with `entryId`. This is the client's rule. Change the amount or edit the existing entry.
-- **Closed days:** posting to a closed date returns `409 DAY_CLOSED` for everyone except OWNER.
-- **Date limits:** future dates, or dates over 7 days old, return `400` (`FUTURE_DATE`, `DATE_TOO_OLD`) unless OWNER.
-- **Rate at check-in:** only OWNER can check in at a rate other than the room's; others get `403 RATE_OVERRIDE_FORBIDDEN`. The app's current behaviour of sending the room rate is fine.
+- **Closed days:** posting to a closed date returns `409 DAY_CLOSED` for everyone except ADMIN.
+- **Date limits:** future dates, or dates over 7 days old, return `400` (`FUTURE_DATE`, `DATE_TOO_OLD`) unless ADMIN.
+- **Rate at check-in:** only ADMIN can check in at a rate other than the room's; others get `403 RATE_OVERRIDE_FORBIDDEN`. The app's current behaviour of sending the room rate is fine.
 - **Checked-out guests:** the guest's token returns `401 STAY_ENDED`, and the app's existing 401 handling signs them out.
 - **Public booking errors:** `400` with `INVALID_OTP`, `BULK_BOOKING`, `INVALID_DATES` or `TOO_MANY_GUESTS`; `429` with `TOO_MANY_REQUESTS`. Show `message` as it is.
 - **Guest booking list:** the backend has no endpoint for a guest to list their booking requests, so that list is lost on refresh.
-- **Online orders:** these don't post to the day book, because platform payouts aren't cash on the day.
+- **Online orders:** each one posts its order value to the day book as a `BANK` receipt, and cancelling it takes that receipt back.
 
 ## Not tested yet
 

@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { ArrayMinSize, IsArray, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min, ValidateNested } from 'class-validator';
+import { Allow, ArrayMinSize, IsArray, IsEnum, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min, ValidateNested } from 'class-validator';
+import { OnlineOrderStatus } from '../schemas/online-order.schema';
 import { IsBusinessDate, IsDecimal } from '../../common/dto/common.dto';
 
 export class OnlineOrderItemDto {
@@ -39,11 +40,19 @@ export class CreateOnlineOrderDto {
   @ApiProperty({ type: String })
   amount: string;
 
-  @IsDecimal({ min: '0' })
-  @ApiProperty({ type: String })
-  commissionPct: string;
+  /** Ignored: there is no commission. Accepted so older apps keep working. */
+  @Allow()
+  @ApiPropertyOptional({ type: String, deprecated: true })
+  commissionPct?: unknown;
 
-  @IsOptional() @IsString() @MaxLength(30)
-  @ApiPropertyOptional({ type: String })
-  status?: string;
+  /** Defaults to PREPARING. A new order can't start CANCELLED. */
+  @IsOptional() @IsIn([OnlineOrderStatus.PREPARING, OnlineOrderStatus.PICKED_UP, OnlineOrderStatus.DELIVERED])
+  @ApiPropertyOptional({ enum: [OnlineOrderStatus.PREPARING, OnlineOrderStatus.PICKED_UP, OnlineOrderStatus.DELIVERED] })
+  status?: OnlineOrderStatus;
+}
+
+export class SetOnlineOrderStatusDto {
+  @IsEnum(OnlineOrderStatus)
+  @ApiProperty({ enum: OnlineOrderStatus })
+  status: OnlineOrderStatus;
 }

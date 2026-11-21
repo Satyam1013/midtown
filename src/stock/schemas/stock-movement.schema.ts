@@ -16,6 +16,10 @@ export class StockMovement {
 
   @Prop(ref('User'))
   userId: Types.ObjectId;
+
+  /** OPENING (new item), ADJUSTMENT (an edit or POST /stock/:id/adjust); null on older rows. */
+  @Prop({ type: String, enum: ['OPENING', 'ADJUSTMENT', null], default: null })
+  type: 'OPENING' | 'ADJUSTMENT' | null;
 }
 
 export type StockMovementDocument = HydratedDocument<StockMovement>;

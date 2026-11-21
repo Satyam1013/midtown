@@ -67,6 +67,10 @@ export class ServiceRequest {
 
   @Prop(ref('User', { required: false }))
   handledByUserId: Types.ObjectId | null;
+
+  /** Laundry requests: the live order made from it; null when none (or it was cancelled). */
+  @Prop(ref('LaundryOrder', { required: false }))
+  laundryOrderId: Types.ObjectId | null;
 }
 
 export type ServiceRequestDocument = HydratedDocument<ServiceRequest>;

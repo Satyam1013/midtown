@@ -123,7 +123,7 @@ async function main() {
         phone: config.getOrThrow<string>('OWNER_PHONE'),
         email: config.get<string>('OWNER_EMAIL')?.toLowerCase() || null,
         passwordHash: ownerPasswordHash,
-        role: Role.OWNER,
+        role: Role.ADMIN,
         active: true,
         tokenVersion: 0,
       });

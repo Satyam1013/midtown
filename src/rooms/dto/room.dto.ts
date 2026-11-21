@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ArrayMaxSize, IsArray, IsEnum, IsIn, IsInt, IsMongoId, IsNotEmpty, IsOptional, IsString, MaxLength, Min, IsNumber, IsPositive, Max, ValidateIf } from 'class-validator';
 import { IsBusinessDate, IsDecimal } from '../../common/dto/common.dto';
 import { ROOM_FEATURES, RoomCategory, RoomFeature, RoomStatus } from '../schemas/room.schema';
@@ -166,4 +166,24 @@ export class MaintenanceHistoryQueryDto {
   @ApiPropertyOptional({ type: String })
   @IsOptional() @IsMongoId()
   roomId?: string;
+}
+
+export class AvailableRoomsQueryDto {
+  /** Arrival, inclusive. */
+  @ApiProperty({ type: String })
+  @IsBusinessDate()
+  from: string;
+
+  /** Departure, exclusive: a room leaving that day is free. */
+  @ApiProperty({ type: String })
+  @IsBusinessDate()
+  to: string;
+
+  @ApiPropertyOptional({ type: String })
+  @IsOptional() @IsMongoId()
+  roomTypeId?: string;
+
+  @ApiPropertyOptional({ type: Number })
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(10)
+  guests?: number;
 }

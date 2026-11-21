@@ -19,6 +19,7 @@ import { RoomImage } from './schemas/room-image.schema';
 import { ImageStorageService } from '../files/image-storage.service';
 import { UploadedFileLike } from '../customers/customer-documents.service';
 import { Room, RoomCategory, RoomStatus } from './schemas/room.schema';
+import { RoomHoldsService } from './room-holds.service';
 
 // Allowed manual moves. OCCUPIED and DIRTY only ever come from check-in / check-out.
 const MANUAL_FROM: Partial<Record<RoomStatus, RoomStatus[]>> = {
@@ -45,6 +46,7 @@ export class RoomsService {
     private readonly audit: AuditService,
     @InjectModel(RoomImage.name) private readonly images: Model<RoomImage>,
     private readonly storage: ImageStorageService,
+    private readonly holds: RoomHoldsService,
   ) {}
 
   /** All rooms with their type, prices and current stay, in the shape the manager app reads. */
@@ -55,9 +57,10 @@ export class RoomsService {
       this.stays.find({ status: StayStatus.IN_HOUSE }).lean(),
       this.images.find().sort({ sortOrder: 1, createdAt: 1 }).lean(),
     ]);
-    const [balances, decorated] = await Promise.all([
+    const [balances, decorated, holds] = await Promise.all([
       this.folio.balances(stays.map((s) => s._id)),
       this.stayView.decorate(stays),
+      this.holds.nextHolds(),
     ]);
     const typeById = new Map(types.map((t) => [String(t._id), t]));
     const stayByRoom = new Map(decorated.map((s) => [String(s.roomId), s]));
@@ -83,6 +86,8 @@ export class RoomsService {
         doubleRate: toD128(doubleRateOf(room)),
         roomType: type ? { id: type._id, name: type.name, category: type.category ?? null, tariff: type.tariff } : null,
         currentStay: stay ? { ...stay, balance: balances.get(String(stay._id)) ?? toD128('0') } : null,
+        /** The next booking holding this room (CONFIRMED / ARRIVING, not yet departed). */
+        prebooking: holds.get(String(room._id)) ?? null,
       };
     });
   }
@@ -112,6 +117,51 @@ export class RoomsService {
     if (!image) throw notFound('Image');
     await this.storage.remove(image.fileId);
     return { deleted: true };
+  }
+
+  /**
+   * Refused while a guest is in the room. A room with any history (stays,
+   * register lines, maintenance) is soft-deleted: gone from lists and from
+   * check-in, but old bills and registers still show its number, and the
+   * number is never reused. A room without history is removed outright.
+   */
+  async remove(id: Types.ObjectId, user: Principal) {
+    const removed = await this.tx.run(async ({ session, afterCommit }) => {
+      const room = await this.rooms.findById(id).session(session);
+      if (!room) throw notFound('Room');
+      const inHouse = await this.stays.exists({ roomId: id, status: StayStatus.IN_HOUSE }).session(session);
+      if (room.status === RoomStatus.OCCUPIED || inHouse) {
+        throw conflict('ROOM_IN_USE', `Room ${room.number} has a guest in house; check out or shift the guest first`);
+      }
+      const db = this.rooms.db;
+      const seen = async (collection: string) => !!(await db.collection(collection).findOne({ roomId: id }, { session, projection: { _id: 1 } }));
+      const history =
+        (await seen('stays')) || (await seen('day_register_entries')) || (await seen('settlements')) || (await seen('room_maintenance'));
+      let fileIds: Types.ObjectId[] = [];
+      if (history) {
+        room.set('deletedAt', new Date());
+        room.status = RoomStatus.OOO;
+        await room.save({ session });
+      } else {
+        const images = await this.images.find({ roomId: id }).setOptions({ withDeleted: true }).session(session).lean();
+        fileIds = images.map((i) => i.fileId);
+        await this.images.deleteMany({ roomId: id }).setOptions({ withDeleted: true }).session(session);
+        await this.rooms.deleteOne({ _id: id }).session(session);
+      }
+      await this.audit.record(
+        AuditAction.ROOM_DELETE,
+        null,
+        userObjectId(user),
+        { roomId: String(id), number: room.number, floor: room.floor, mode: history ? 'SOFT' : 'HARD' },
+        session,
+      );
+      afterCommit(() => this.events.toHotel('room.deleted', { roomId: String(id), number: room.number }));
+      return { id: String(id), number: room.number, deleted: true, soft: history, fileIds };
+    });
+    // Files go only after the commit, so a rollback never leaves a room without its photos.
+    for (const fileId of removed.fileIds) await this.storage.remove(fileId).catch(() => undefined);
+    const { fileIds: _f, ...result } = removed;
+    return result;
   }
 
   async create(dto: CreateRoomDto) {
@@ -276,9 +326,11 @@ export class RoomsService {
         session,
       );
       afterCommit(() => this.events.toHotel('room.status.changed', { roomId: String(updated._id), status: updated.status }));
+      // Cleaned or back in service: a booking arriving today takes it straight away.
+      await this.holds.sync([updated._id], session, afterCommit);
       return updated;
     });
-    return room;
+    return this.rooms.findById(room._id).lean();
   }
 
   async markAllClean() {
@@ -287,6 +339,7 @@ export class RoomsService {
     for (const r of dirty) {
       this.events.toHotel('room.status.changed', { roomId: String(r._id), status: RoomStatus.VACANT });
     }
+    await this.holds.sync(dirty.map((r) => r._id), null);
     return { updated: res.modifiedCount };
   }
 

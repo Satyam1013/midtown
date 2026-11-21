@@ -33,6 +33,10 @@ export class FolioLine {
   @Prop(ref('DayRegisterEntry', { required: false }))
   entryId: Types.ObjectId | null;
 
+  /** Laundry order billed to the room. */
+  @Prop(ref('LaundryOrder', { required: false }))
+  laundryOrderId: Types.ObjectId | null;
+
   /** KOT billed to the room (FOOD lines). */
   @Prop(ref('Kot', { required: false }))
   kotId: Types.ObjectId | null;
@@ -63,6 +67,10 @@ FolioLineSchema.index({ stayId: 1, createdAt: 1 });
 FolioLineSchema.index(
   { entryId: 1 },
   { unique: true, partialFilterExpression: { ...LIVE, entryId: { $type: 'objectId' } } },
+);
+FolioLineSchema.index(
+  { laundryOrderId: 1 },
+  { unique: true, partialFilterExpression: { ...LIVE, laundryOrderId: { $type: 'objectId' } } },
 );
 FolioLineSchema.index(
   { kotId: 1 },
