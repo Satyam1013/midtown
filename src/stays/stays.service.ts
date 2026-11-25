@@ -858,6 +858,15 @@ export class StaysService {
     }));
   }
 
+  /** GET /stays/:id. Voided stays are soft-deleted, so they are 404 here. */
+  async one(id: Types.ObjectId) {
+    const stay = await this.stays.findById(id).lean();
+    if (!stay) throw notFound('Stay');
+    const [view] = await this.view.decorate([stay]);
+    const balances = await this.folio.balances([stay._id]);
+    return { ...view, balance: balances.get(String(stay._id)) ?? toD128('0') };
+  }
+
   private async present(id: Types.ObjectId) {
     const stay = await this.stays.findById(id).lean();
     const [view] = await this.view.decorate([stay!]);

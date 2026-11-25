@@ -7,6 +7,10 @@ import { Room } from '../rooms/schemas/room.schema';
 import { RoomShift } from './schemas/room-shift.schema';
 import { StayGuest } from './schemas/stay-guest.schema';
 
+/** A stay's fixed bill GST rates as the apps read them, or null when never saved. */
+export const billTaxView = (t: any) =>
+  t ? { stay: t.stay, food: t.food, other: t.other, updatedBy: t.updatedBy ?? null, updatedAt: t.updatedAt ?? null } : null;
+
 /**
  * The stay as the apps read it: roomCharges[] with amounts and shifts[] with
  * room numbers. Stays from before segments get one segment derived from the
@@ -53,6 +57,7 @@ export class StayViewService {
           ];
       return {
         ...stay,
+        billTax: billTaxView(stay.billTax),
         guests: stay.guests ?? 1,
         roomCharges: segments.map((seg: any) => ({
           id: seg._id ?? null,

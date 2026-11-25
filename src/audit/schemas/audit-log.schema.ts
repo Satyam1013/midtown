@@ -39,6 +39,7 @@ export enum AuditAction {
   ATTENDANCE_MARK = 'ATTENDANCE_MARK',
   STAFF_UPDATE = 'STAFF_UPDATE',
   STAFF_DELETE = 'STAFF_DELETE',
+  BILL_TAX_UPDATE = 'BILL_TAX_UPDATE',
 }
 
 @Schema({ collection: 'audit_logs', timestamps: true })

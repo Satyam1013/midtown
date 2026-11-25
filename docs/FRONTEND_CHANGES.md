@@ -805,3 +805,19 @@ The response is `{ totalSales, totalGuests, totalFoodOrders, totalExpenses, food
 ## Not tested yet
 
 The backend's integration tests cover the API these apps call, but neither app has been run against it in a browser. Please check each screen once the backend is deployed.
+
+## Bill GST rates per stay
+
+`PUT /stays/:id/bill-tax` (ADMIN, MANAGER, STAFF) fixes the GST rates of the stay's bill, one per section. Each call overwrites the saved rates (no merge).
+
+```json
+{ "rates": { "stay": 5, "food": 5, "other": 18 } }
+```
+
+- Each rate is a JSON number from 0 to 100 with at most 2 decimals; all three keys are required, nothing else is accepted. The rate is total GST; the bill splits it half CGST, half SGST. A string such as `"5"` is a 400, so send numbers.
+- 200: `{ data: { stayId, billTax: { stay, food, other }, updatedBy, updatedAt } }`.
+- 400 `VALIDATION_ERROR`, 404 `NOT_FOUND` (unknown stay), 409 `STAY_CLOSED` (checked out). Show `message`.
+
+`billTax` (`{ stay, food, other, updatedBy, updatedAt }`, or `null` if never saved) is on `GET /stays/:id` (new), `GET /stays/in-house`, the stays inside `GET /rooms`, and `GET /stays/:id/bill`. Non-null: open the sheet with the rates fixed. Null: show the defaults, unlocked.
+
+What the rates change: only the tax breakup of `GET /stays/:id/bill`. Each section's total stays what the guest was charged; its taxable value, CGST and SGST are worked out again from that total at the fixed rate, and its line amounts are scaled to add up to the new taxable value. Totals, payments, balance, folio, day book and cash never change. `POST /stays/:id/bill-prints` records the rates in use (`billTax`) with each print.

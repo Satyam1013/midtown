@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsMongoId, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsEnum, IsIn, IsDefined, IsInt, IsMongoId, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 import { IsBusinessDate, IsClockTime, IsDecimal } from '../../common/dto/common.dto';
 import { PaymentMode } from '../../common/enums';
 import { MAX_GUESTS, MIN_GUESTS } from '../../config/pricing';
@@ -337,6 +337,27 @@ export class BillPrintDto {
   @ApiProperty({ type: SectionAmountsDto })
   @ValidateNested() @Type(() => SectionAmountsDto)
   actualAmounts: SectionAmountsDto;
+}
+
+/** One rate per bill section: a percentage of total GST, 0–100, up to 2 decimals. */
+export class BillTaxRatesDto {
+  @ApiProperty({ type: Number, example: 5 })
+  @IsDefined() @IsNumber({ maxDecimalPlaces: 2, allowNaN: false, allowInfinity: false }) @Min(0) @Max(100)
+  stay: number;
+
+  @ApiProperty({ type: Number, example: 5 })
+  @IsDefined() @IsNumber({ maxDecimalPlaces: 2, allowNaN: false, allowInfinity: false }) @Min(0) @Max(100)
+  food: number;
+
+  @ApiProperty({ type: Number, example: 18 })
+  @IsDefined() @IsNumber({ maxDecimalPlaces: 2, allowNaN: false, allowInfinity: false }) @Min(0) @Max(100)
+  other: number;
+}
+
+export class BillTaxDto {
+  @ApiProperty({ type: BillTaxRatesDto })
+  @IsDefined() @ValidateNested() @Type(() => BillTaxRatesDto)
+  rates: BillTaxRatesDto;
 }
 
 export class VoidStayDto {

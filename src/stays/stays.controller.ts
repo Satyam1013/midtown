@@ -1,11 +1,11 @@
-import { Body, Controller, Delete, Get, Headers, HttpCode, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, HttpCode, Param, Patch, Post, Put } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Types } from 'mongoose';
 import { AdminOnly, CurrentUser, Roles } from '../common/decorators';
 import { DESK, MANAGEMENT } from '../common/enums';
 import { Principal } from '../common/interfaces/principal';
 import { ParseObjectIdPipe } from '../common/pipes/parse-object-id.pipe';
-import { AddGuestDto, BillPrintDto, CheckInDto, CheckOutDto, ShiftRoomDto, UpdateStayDto, VoidStayDto } from './dto/stay.dto';
+import { AddGuestDto, BillPrintDto, BillTaxDto, CheckInDto, CheckOutDto, ShiftRoomDto, UpdateStayDto, VoidStayDto } from './dto/stay.dto';
 import { StayBillService } from './stay-bill.service';
 import { StaysService } from './stays.service';
 
@@ -31,6 +31,12 @@ export class StaysController {
     return this.bills.recordPrint(id, dto, user);
   }
 
+  /** Fixes the bill's GST rates per section (overwrites). In-house stays only; 409 STAY_CLOSED after check-out. */
+  @Put(':id/bill-tax')
+  setBillTax(@Param('id', ParseObjectIdPipe) id: Types.ObjectId, @Body() dto: BillTaxDto, @CurrentUser() user: Principal) {
+    return this.bills.setBillTax(id, dto, user);
+  }
+
   @Roles(...MANAGEMENT)
   @Get(':id/bill-prints')
   listPrints(@Param('id', ParseObjectIdPipe) id: Types.ObjectId) {
@@ -45,6 +51,12 @@ export class StaysController {
   @Get('in-house')
   inHouse() {
     return this.stays.inHouse();
+  }
+
+  /** One stay as the apps read it, with billTax (null until saved). */
+  @Get(':id')
+  one(@Param('id', ParseObjectIdPipe) id: Types.ObjectId) {
+    return this.stays.one(id);
   }
 
   @Patch(':id')

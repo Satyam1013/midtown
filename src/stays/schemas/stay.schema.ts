@@ -115,6 +115,32 @@ export class Stay {
 
   @Prop({ type: String, default: null })
   voidReason: string | null;
+
+  /**
+   * GST rates (% of total GST, split half CGST and half SGST) the manager fixed
+   * for this stay's bill, per section. Null: the rates charged on each line.
+   * Only the bill's tax breakup uses them; folio, payments and cash never change.
+   */
+  @Prop({
+    type: {
+      stay: { type: Number, required: true },
+      food: { type: Number, required: true },
+      other: { type: Number, required: true },
+      updatedBy: { type: Types.ObjectId, ref: 'User', required: true },
+      updatedAt: { type: Date, required: true },
+    },
+    default: null,
+    _id: false,
+  })
+  billTax: BillTaxRates | null;
+}
+
+export interface BillTaxRates {
+  stay: number;
+  food: number;
+  other: number;
+  updatedBy: Types.ObjectId;
+  updatedAt: Date;
 }
 
 export type StayDocument = HydratedDocument<Stay>;

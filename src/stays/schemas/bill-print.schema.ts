@@ -42,6 +42,10 @@ export class BillPrint {
   /** printed − actual (app's figures), per section. */
   @Prop({ type: Object, required: true })
   difference: BillSectionAmounts;
+
+  /** The stay's fixed GST rates when printed; null when it had none. */
+  @Prop({ type: Object, default: null })
+  billTax: { stay: number; food: number; other: number } | null;
 }
 
 export type BillPrintDocument = HydratedDocument<BillPrint>;

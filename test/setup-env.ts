@@ -10,5 +10,7 @@ process.env.OWNER_NAME = 'Test Owner';
 process.env.OWNER_PHONE = '9000000000';
 process.env.OWNER_PASSWORD = 'test-owner-password';
 process.env.OTP_PROVIDER = 'console';
+// Uploads go to the test database's GridFS, never the real Spaces bucket in .env.
+process.env.STORAGE_DRIVER = 'gridfs';
 process.env.FRONTEND_MANAGER_URL = 'http://localhost:3000';
 process.env.FRONTEND_GUEST_URL = 'http://localhost:3000';
